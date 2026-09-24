@@ -3,11 +3,13 @@ import 'package:flutter/material.dart';
 import '../core/app_colors.dart';
 import 'home/home_view.dart';
 import 'calendar/calendar_view.dart';
+import 'streak/streak_view.dart';
+import 'shop/shop_view.dart';
 
 // Các file này bạn sẽ tạo sau:
 // import 'calendar/calendar_view.dart';
-// import 'streak/streak_view.dart';
-// import 'shop/shop_view.dart';
+// 
+// 
 
 class MainNavigation extends StatefulWidget {
   const MainNavigation({super.key});
@@ -22,7 +24,9 @@ class _MainNavigationState extends State<MainNavigation> {
   // Danh sách các màn hình tương ứng với tab
   final List<Widget> _screens = [
     const HomeView(),
-    const CalendarView(), // Thay dòng Text nháp bằng màn hình này
+    const CalendarView(),
+    const StreakView(),
+    const ShopView(),// Thay dòng Text nháp bằng màn hình này
     const Center(
       child: Text("Màn hình Nuôi Chuỗi", style: TextStyle(color: Colors.white)),
     ),
