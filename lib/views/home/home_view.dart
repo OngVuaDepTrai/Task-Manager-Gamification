@@ -1,18 +1,22 @@
 import 'dart:io';
 
+import 'package:confetti/confetti.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../../core/app_colors.dart';
 import '../../core/app_session.dart';
 import '../../core/database_helper.dart';
+import '../../core/game_rules.dart';
 import '../../models/task_model.dart';
-import '../../models/user_model.dart';
+import '../../view_models/gamification_view_model.dart';
 import '../../widgets/task_card_widget.dart';
 import '../task/task_form_view.dart';
 import '../profile/profile_view.dart';
-import '../pet/pet_view.dart';
 import '../leaderboard/leaderboard_view.dart';
-import '../shared/shared_task_view.dart';
+import '../friends/friends_view.dart';
+import '../groups/groups_view.dart';
+import '../notifications/notifications_view.dart';
 
 class HomeView extends StatefulWidget {
   const HomeView({super.key});
@@ -35,6 +39,24 @@ class _HomeViewState extends State<HomeView> {
 
   List<TaskModel> todayTasks = [];
   bool isLoading = true;
+  // Số lời mời kết bạn + thông báo chưa xem (hiện chấm đỏ trên avatar)
+  int unseenCount = 0;
+
+  // Tìm kiếm công việc theo tên / mô tả
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
+
+  // Hiệu ứng tung hoa khi hoàn thành đúng hạn
+  late final ConfettiController _confettiController = ConfettiController(
+    duration: const Duration(seconds: 2),
+  );
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    _confettiController.dispose();
+    super.dispose();
+  }
 
   @override
   void initState() {
@@ -55,13 +77,19 @@ class _HomeViewState extends State<HomeView> {
       final dbCategories = await DatabaseHelper.instance.getCategories(
         user.id!,
       );
+      final unseen = await DatabaseHelper.instance.countUnseen(user.id!);
 
       if (!mounted) return;
       setState(() {
         todayTasks = tasks;
+        unseenCount = unseen;
+        // "Nhóm" là danh mục cố định để lọc việc nhóm được giao
         categories = [
           'Tất cả',
-          ...dbCategories.map((c) => c['name'] as String),
+          DatabaseHelper.groupCategoryName,
+          ...dbCategories
+              .map((c) => c['name'] as String)
+              .where((n) => n != DatabaseHelper.groupCategoryName),
         ];
 
         if (!categories.contains(selectedCategory)) {
@@ -79,7 +107,9 @@ class _HomeViewState extends State<HomeView> {
   Widget build(BuildContext context) {
     final pendingCount = todayTasks.where((t) => !t.isDone).length;
 
-    return Scaffold(
+    return Stack(
+      children: [
+    Scaffold(
       body: SafeArea(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -87,6 +117,8 @@ class _HomeViewState extends State<HomeView> {
             _buildGamificationTopBar(),
             const SizedBox(height: 16),
             _buildHeader(pendingCount, todayTasks.length),
+            const SizedBox(height: 12),
+            _buildSearchBar(),
             const SizedBox(height: 12),
             _buildReminderStatusFilters(),
             const SizedBox(height: 10),
@@ -117,11 +149,28 @@ class _HomeViewState extends State<HomeView> {
         },
         child: const Icon(Icons.add, color: Colors.white, size: 30),
       ),
+    ),
+        // Tung hoa khi hoàn thành nhắc nhở đúng hạn
+        Align(
+          alignment: Alignment.topCenter,
+          child: ConfettiWidget(
+            confettiController: _confettiController,
+            blastDirectionality: BlastDirectionality.explosive,
+            emissionFrequency: 0.05,
+            numberOfParticles: 20,
+            gravity: 0.3,
+          ),
+        ),
+      ],
     );
   }
 
   Widget _buildGamificationTopBar() {
+    // Lắng nghe ViewModel để thanh trạng thái cập nhật ngay khi vàng/HP thay đổi
+    context.watch<GamificationViewModel>();
     final user = AppSession.currentUser;
+    final int hp = user?.hp ?? GameRules.maxHp;
+    final int shields = user?.shields ?? 0;
     final int exp = user?.exp ?? 0;
     final int gold = user?.gold ?? 0;
     final int streak = user?.currentStreak ?? 0;
@@ -150,9 +199,10 @@ class _HomeViewState extends State<HomeView> {
             onSelected: (value) async {
               Widget? screen;
               if (value == 'profile') screen = const ProfileView();
-              if (value == 'pet') screen = const PetView();
               if (value == 'leaderboard') screen = const LeaderboardView();
-              if (value == 'shared') screen = const SharedTaskView();
+              if (value == 'friends') screen = const FriendsView();
+              if (value == 'groups') screen = const GroupsView();
+              if (value == 'notifications') screen = const NotificationsView();
 
               if (screen != null) {
                 await Navigator.push(
@@ -174,16 +224,6 @@ class _HomeViewState extends State<HomeView> {
                 ),
               ),
               const PopupMenuItem<String>(
-                value: 'pet',
-                child: Row(
-                  children: [
-                    Icon(Icons.pets, color: Colors.orange),
-                    SizedBox(width: 10),
-                    Text('Pet giữ chuỗi'),
-                  ],
-                ),
-              ),
-              const PopupMenuItem<String>(
                 value: 'leaderboard',
                 child: Row(
                   children: [
@@ -194,17 +234,47 @@ class _HomeViewState extends State<HomeView> {
                 ),
               ),
               const PopupMenuItem<String>(
-                value: 'shared',
+                value: 'friends',
+                child: Row(
+                  children: [
+                    Icon(Icons.people_outline, color: Colors.lightBlueAccent),
+                    SizedBox(width: 10),
+                    Text('Bạn bè'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem<String>(
+                value: 'groups',
                 child: Row(
                   children: [
                     Icon(Icons.group_outlined, color: Colors.greenAccent),
                     SizedBox(width: 10),
-                    Text('Bạn bè & Việc nhóm'),
+                    Text('Việc nhóm'),
+                  ],
+                ),
+              ),
+              PopupMenuItem<String>(
+                value: 'notifications',
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.notifications_outlined,
+                      color: Colors.orangeAccent,
+                    ),
+                    const SizedBox(width: 10),
+                    const Text('Thông báo'),
+                    if (unseenCount > 0) ...[
+                      const SizedBox(width: 8),
+                      _buildBadge(unseenCount),
+                    ],
                   ],
                 ),
               ),
             ],
-            child: Builder(
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+            Builder(
               builder: (context) {
                 String? path = user?.avatarPath;
                 if (path == null || path.isEmpty) {
@@ -240,6 +310,23 @@ class _HomeViewState extends State<HomeView> {
                 );
               },
             ),
+                // Chấm đỏ báo có lời mời kết bạn / việc được giao chưa xem
+                if (unseenCount > 0)
+                  Positioned(
+                    right: -2,
+                    top: -2,
+                    child: Container(
+                      width: 14,
+                      height: 14,
+                      decoration: BoxDecoration(
+                        color: AppColors.hpRed,
+                        shape: BoxShape.circle,
+                        border: Border.all(color: AppColors.card, width: 2),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -254,10 +341,35 @@ class _HomeViewState extends State<HomeView> {
                   ),
                 ),
                 const SizedBox(height: 4),
-                LinearProgressIndicator(
-                  value: 1.0,
-                  color: AppColors.hpRed,
-                  backgroundColor: Colors.grey[800],
+                // HP dạng trái tim: mỗi tim = 1 ngày bỏ lỡ được phép
+                Row(
+                  children: [
+                    for (int i = 0; i < GameRules.maxHp; i++)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 2),
+                        child: Icon(
+                          i < hp ? Icons.favorite : Icons.favorite_border,
+                          color: i < hp ? AppColors.hpRed : Colors.grey,
+                          size: 16,
+                        ),
+                      ),
+                    const SizedBox(width: 8),
+                    Icon(
+                      Icons.shield,
+                      color: shields > 0 ? AppColors.primary : Colors.grey,
+                      size: 15,
+                    ),
+                    Text(
+                      " x$shields",
+                      style: TextStyle(
+                        color: shields > 0
+                            ? AppColors.textMain
+                            : AppColors.textSub,
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 4),
                 LinearProgressIndicator(
@@ -308,6 +420,56 @@ class _HomeViewState extends State<HomeView> {
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildSearchBar() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: TextField(
+        controller: _searchController,
+        onChanged: (v) => setState(() => _searchQuery = v.trim().toLowerCase()),
+        style: const TextStyle(color: AppColors.textMain),
+        decoration: InputDecoration(
+          hintText: "Tìm công việc...",
+          hintStyle: const TextStyle(color: AppColors.textSub),
+          prefixIcon: const Icon(Icons.search, color: AppColors.textSub),
+          suffixIcon: _searchQuery.isEmpty
+              ? null
+              : IconButton(
+                  icon: const Icon(Icons.close, color: AppColors.textSub),
+                  onPressed: () {
+                    _searchController.clear();
+                    setState(() => _searchQuery = '');
+                  },
+                ),
+          isDense: true,
+          filled: true,
+          fillColor: AppColors.card,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(14),
+            borderSide: BorderSide.none,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBadge(int count) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      decoration: BoxDecoration(
+        color: AppColors.hpRed,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Text(
+        "$count",
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 11,
+          fontWeight: FontWeight.bold,
+        ),
       ),
     );
   }
@@ -428,9 +590,19 @@ class _HomeViewState extends State<HomeView> {
   Widget _buildTaskList(List<TaskModel> tasksList) {
     final now = DateTime.now();
     final filteredTasks = tasksList.where((t) {
-      final matchCategory =
-          selectedCategory == 'Tất cả' || t.category == selectedCategory;
+      final matchCategory = selectedCategory == 'Tất cả' ||
+          (selectedCategory == DatabaseHelper.groupCategoryName
+              ? t.isGroupTask
+              : t.category == selectedCategory);
       if (!matchCategory) return false;
+
+      if (_searchQuery.isNotEmpty) {
+        final inTitle = t.title.toLowerCase().contains(_searchQuery);
+        final inDesc = (t.description ?? '').toLowerCase().contains(
+          _searchQuery,
+        );
+        if (!inTitle && !inDesc) return false;
+      }
 
       switch (selectedReminderFilter) {
         case 'Cần làm':
@@ -462,7 +634,7 @@ class _HomeViewState extends State<HomeView> {
             Icon(Icons.inbox, size: 60, color: AppColors.textSub),
             SizedBox(height: 10),
             Text(
-              "Không có công việc phù hợp bộ lọc.",
+              "Không có công việc.",
               style: TextStyle(color: AppColors.textSub, fontSize: 16),
             ),
           ],
@@ -473,7 +645,7 @@ class _HomeViewState extends State<HomeView> {
     return ListView.builder(
       padding: const EdgeInsets.symmetric(horizontal: 16),
       itemCount: filteredTasks.length,
-      itemBuilder: (context, index) {
+      itemBuilder: (_, index) {
         var task = filteredTasks[index];
         return TaskCardWidget(
           task: task,
@@ -487,51 +659,28 @@ class _HomeViewState extends State<HomeView> {
             }
           },
           onComplete: () async {
-            if (!task.isDone) {
-              setState(() => task.isDone = true);
+            if (task.isDone) return;
 
-              final user = AppSession.currentUser;
-              if (user != null && user.id != null) {
-                final updatedUser = UserModel(
-                  id: user.id,
-                  name: user.name,
-                  email: user.email,
-                  password: user.password,
-                  exp: user.exp + task.exp,
-                  gold: user.gold + task.gold,
-                  currentStreak: user.currentStreak == 0
-                      ? 1
-                      : user.currentStreak,
-                  longestStreak: user.longestStreak == 0
-                      ? 1
-                      : user.longestStreak,
-                  avatarPath: user.avatarPath,
-                );
+            final result = await context
+                .read<GamificationViewModel>()
+                .completeTask(task, now);
+            if (result == null || !mounted) return;
+            if (result.onTime) _confettiController.play();
 
-                AppSession.currentUser = updatedUser;
-                await DatabaseHelper.instance.updateUserStats(updatedUser);
-
-                await DatabaseHelper.instance.setTaskCompletionForDate(
-                  userId: user.id!,
-                  task: task,
-                  isDone: true,
-                  day: now.day,
-                  month: now.month,
-                  year: now.year,
-                );
-              }
-
-              if (!mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    '🎉 Hoàn thành "${task.title}"! +${task.exp} EXP & +${task.gold} Vàng',
-                  ),
-                  backgroundColor: Colors.green,
+            final hpText = result.hpGained > 0
+                ? ' & +${result.hpGained} ❤️'
+                : '';
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  result.onTime
+                      ? '🎉 Hoàn thành đúng hạn "${task.title}"! +${result.gold} Vàng$hpText'
+                      : '⏰ Hoàn thành trễ "${task.title}". +${result.gold} Vàng (trễ hạn không hồi máu)',
                 ),
-              );
-              setState(() {});
-            }
+                backgroundColor: result.onTime ? Colors.green : Colors.orange,
+              ),
+            );
+            setState(() {});
           },
         );
       },

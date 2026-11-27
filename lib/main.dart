@@ -2,12 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'core/app_colors.dart';
+import 'services/notification_service.dart';
 import 'views/auth/auth_view.dart';
 import 'view_models/task_view_model.dart';
 import 'view_models/gamification_view_model.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Khởi tạo thông báo nhắc nhở (hẹn giờ qua hệ điều hành)
+  await NotificationService().initService();
   runApp(const MyApp());
 }
 

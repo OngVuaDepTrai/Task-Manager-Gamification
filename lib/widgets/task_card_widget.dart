@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/app_colors.dart';
+import '../core/game_rules.dart';
 import '../models/task_model.dart';
 import '../views/task/task_form_view.dart';
 
@@ -105,6 +106,47 @@ class TaskCardWidget extends StatelessWidget {
                         ),
                     ],
                   ),
+                  // Việc nhóm được giao: hiển thị tên nhóm ngay dưới tên việc
+                  if (task.isGroupTask)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 3),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.group_outlined,
+                            size: 14,
+                            color: Colors.greenAccent,
+                          ),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(
+                              task.groupName ?? "Nhóm",
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Colors.greenAccent,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  // Mô tả chi tiết (rút gọn 2 dòng)
+                  if ((task.description ?? '').isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 3),
+                      child: Text(
+                        task.description!,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: AppColors.textSub,
+                          fontSize: 13,
+                          height: 1.3,
+                        ),
+                      ),
+                    ),
                   const SizedBox(height: 6),
                   Wrap(
                     spacing: 8,
@@ -167,7 +209,7 @@ class TaskCardWidget extends StatelessWidget {
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             Text(
-                              "+${task.gold} ",
+                              "+${GameRules.goldOnTime} ",
                               style: const TextStyle(
                                 color: Colors.orange,
                                 fontSize: 11,

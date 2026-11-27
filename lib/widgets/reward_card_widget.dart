@@ -7,18 +7,27 @@ class RewardCardWidget extends StatelessWidget {
   final ShopItemModel reward;
   final int currentGold;
   final VoidCallback onBuy;
+  // Nếu khác null: khóa nút mua và hiển thị lý do (VD: "Đã đủ")
+  final String? blockedLabel;
+  final String buyLabel;
+  final VoidCallback? onLongPress;
 
   const RewardCardWidget({
     super.key,
     required this.reward,
     required this.currentGold,
     required this.onBuy,
+    this.blockedLabel,
+    this.buyLabel = "Mua",
+    this.onLongPress,
   });
 
   @override
   Widget build(BuildContext context) {
-    bool canBuy = currentGold >= reward.price;
-    return Container(
+    final bool canBuy = blockedLabel == null && currentGold >= reward.price;
+    return GestureDetector(
+      onLongPress: onLongPress,
+      child: Container(
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -95,7 +104,7 @@ class RewardCardWidget extends StatelessWidget {
               ),
               onPressed: canBuy ? onBuy : null,
               child: Text(
-                canBuy ? "Mua" : "Thiếu vàng",
+                canBuy ? buyLabel : (blockedLabel ?? "Thiếu vàng"),
                 style: TextStyle(
                   color: canBuy ? Colors.black : AppColors.textSub,
                   fontWeight: FontWeight.bold,
@@ -106,6 +115,7 @@ class RewardCardWidget extends StatelessWidget {
           ),
         ],
       ),
+    ),
     );
   }
 }

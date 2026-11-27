@@ -6,12 +6,19 @@ import 'package:geolocator/geolocator.dart';
 import '../../core/app_colors.dart';
 import '../../core/app_session.dart';
 import '../../core/database_helper.dart';
+import '../../models/group_model.dart';
 import '../../models/task_model.dart';
+import '../../models/user_model.dart';
 import '../../services/notification_service.dart';
 
+// Form dùng chung cho:
+// - Tạo / sửa việc cá nhân
+// - Giao việc nhóm (truyền group) và sửa việc nhóm (task có groupId)
+//   -> có thêm ô chọn thành viên đảm nhận; chỉ nhóm trưởng được sửa/xóa
 class TaskFormView extends StatefulWidget {
   final TaskModel? task;
-  const TaskFormView({super.key, this.task});
+  final GroupModel? group;
+  const TaskFormView({super.key, this.task, this.group});
 
   @override
   State<TaskFormView> createState() => _TaskFormViewState();
@@ -19,6 +26,7 @@ class TaskFormView extends StatefulWidget {
 
 class _TaskFormViewState extends State<TaskFormView> {
   late TextEditingController _titleController;
+  late TextEditingController _descController;
   bool _isHighPriority = false;
   bool _isDaily = false;
   bool _reminderEnabled = true;
@@ -35,11 +43,31 @@ class _TaskFormViewState extends State<TaskFormView> {
   bool _isTracking = false;
   List<Map<String, dynamic>> _dbCategories = [];
 
+  // ---- Chế độ việc nhóm ----
+  GroupModel? _group;
+  List<UserModel> _members = [];
+  int? _assigneeId;
+  bool _canEdit = true;
+
+  bool get _isGroupMode =>
+      widget.group != null || (widget.task?.isGroupTask ?? false);
+
+  String get _assigneeName {
+    final me = AppSession.currentUser;
+    for (final m in _members) {
+      if (m.id == _assigneeId) return m.id == me?.id ? "${m.name} (Bạn)" : m.name;
+    }
+    return _members.isEmpty ? "Đang tải..." : "Không còn trong nhóm";
+  }
+
   @override
   void initState() {
     super.initState();
     final now = DateTime.now();
     _titleController = TextEditingController(text: widget.task?.title ?? "");
+    _descController = TextEditingController(
+      text: widget.task?.description ?? "",
+    );
     _isHighPriority = widget.task?.isHighPriority ?? false;
     _isDaily =
         widget.task?.isDaily ??
@@ -57,7 +85,93 @@ class _TaskFormViewState extends State<TaskFormView> {
       _selectedGPS = widget.task?.locationName ?? "Chưa thiết lập";
       _selectedDate = "$_day/$_month/$_year";
     }
+    if (_isGroupMode) {
+      _canEdit = false; // Chờ tải nhóm để biết có phải nhóm trưởng không
+      _isDaily = false;
+      _selectedCategory = DatabaseHelper.groupCategoryName;
+      _loadGroupContext();
+    }
     _loadCategories();
+  }
+
+  Future<void> _loadGroupContext() async {
+    final me = AppSession.currentUser;
+    final db = DatabaseHelper.instance;
+    final gid = widget.group?.id ?? widget.task?.groupId;
+    if (gid == null) return;
+    final group = widget.group ?? await db.getGroupById(gid);
+    final members = await db.getGroupMembers(gid);
+    if (!mounted) return;
+    setState(() {
+      _group = group;
+      _members = members;
+      _assigneeId = widget.task?.ownerId ?? me?.id;
+      // Chỉ nhóm trưởng mới được sửa việc nhóm
+      _canEdit = group != null && group.leaderId == me?.id;
+    });
+  }
+
+  void _showMemberPicker() {
+    final me = AppSession.currentUser;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.background,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text(
+                "Chọn thành viên đảm nhận",
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.textMain,
+                ),
+              ),
+            ),
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                children: _members.map((m) {
+                  final selected = m.id == _assigneeId;
+                  return ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor: m.id == _group?.leaderId
+                          ? AppColors.gold
+                          : AppColors.primary,
+                      child: Text(
+                        m.name.isNotEmpty ? m.name[0].toUpperCase() : "?",
+                        style: const TextStyle(color: Colors.black),
+                      ),
+                    ),
+                    title: Text(
+                      m.id == me?.id ? "${m.name} (Bạn)" : m.name,
+                      style: const TextStyle(color: AppColors.textMain),
+                    ),
+                    subtitle: Text(
+                      m.email,
+                      style: const TextStyle(color: AppColors.textSub),
+                    ),
+                    trailing: selected
+                        ? const Icon(Icons.check_circle, color: AppColors.primary)
+                        : null,
+                    onTap: () {
+                      setState(() => _assigneeId = m.id);
+                      Navigator.pop(sheetContext);
+                    },
+                  );
+                }).toList(),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _loadCategories() async {
@@ -68,6 +182,7 @@ class _TaskFormViewState extends State<TaskFormView> {
       setState(() {
         _dbCategories = cats;
         if (widget.task == null &&
+            !_isGroupMode &&
             cats.isNotEmpty &&
             !_dbCategories.any((c) => c['name'] == _selectedCategory)) {
           _selectedCategory = cats.first['name'] as String;
@@ -80,6 +195,7 @@ class _TaskFormViewState extends State<TaskFormView> {
   @override
   void dispose() {
     _titleController.dispose();
+    _descController.dispose();
     _positionStream?.cancel();
     super.dispose();
   }
@@ -171,6 +287,12 @@ class _TaskFormViewState extends State<TaskFormView> {
   }
 
   void _showReminderDialog(String locationName) {
+    // Bắn thông báo thật (rung/chuông) ngoài hộp thoại trong app
+    final title = _titleController.text.trim();
+    NotificationService().showNotification(
+      "📍 Đã đến gần $locationName",
+      title.isEmpty ? "Hãy thực hiện công việc ngay nhé!" : "Đến lúc làm: $title",
+    );
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -305,11 +427,27 @@ class _TaskFormViewState extends State<TaskFormView> {
     );
   }
 
+  DateTime _firstSelectableDate() {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final current = DateTime(_year, _month, _day);
+    return current.isBefore(today) ? current : today;
+  }
+
+  // Thời điểm đến hạn đang chọn trên form
+  DateTime _selectedDueDateTime() {
+    final parts = _selectedTime.split(':');
+    final h = parts.isNotEmpty ? (int.tryParse(parts[0]) ?? 0) : 0;
+    final m = parts.length > 1 ? (int.tryParse(parts[1]) ?? 0) : 0;
+    return DateTime(_year, _month, _day, h, m);
+  }
+
   Future<void> _pickDate() async {
     final DateTime? picked = await showDatePicker(
       context: context,
       initialDate: DateTime(_year, _month, _day),
-      firstDate: DateTime(2020),
+      // Không cho chọn ngày đã qua (trừ khi task cũ vốn đã có ngày đó)
+      firstDate: _firstSelectableDate(),
       lastDate: DateTime(2030),
     );
     if (picked != null) {
@@ -609,6 +747,15 @@ class _TaskFormViewState extends State<TaskFormView> {
 
   Future<void> _deleteCurrentTask() async {
     final user = AppSession.currentUser;
+    // Việc nhóm: chỉ nhóm trưởng được xóa
+    if (_isGroupMode) {
+      if (!_canEdit || widget.task?.id == null) return;
+      await DatabaseHelper.instance.deleteGroupTask(widget.task!.id!);
+      await NotificationService().cancelTaskReminder(widget.task!.id!);
+      if (!mounted) return;
+      Navigator.pop(context, true);
+      return;
+    }
     if (widget.task?.id != null && user != null && user.id != null) {
       await DatabaseHelper.instance.deleteTask(widget.task!.id!, user.id!);
       await NotificationService().cancelTaskReminder(widget.task!.id!);
@@ -629,7 +776,33 @@ class _TaskFormViewState extends State<TaskFormView> {
     if (user == null || user.id == null) return;
 
     final bool effectiveDaily =
-        _isDaily || _selectedCategory == DatabaseHelper.dailyCategoryName;
+        !_isGroupMode &&
+        (_isDaily || _selectedCategory == DatabaseHelper.dailyCategoryName);
+
+    // Validation: thời điểm đến hạn không được nằm trong quá khứ.
+    // Khi sửa task cũ mà không đổi ngày giờ thì vẫn cho lưu.
+    if (!effectiveDaily) {
+      final due = _selectedDueDateTime();
+      final old = widget.task;
+      final bool dueChanged =
+          old == null ||
+          old.isDaily ||
+          old.day != _day ||
+          old.month != _month ||
+          old.year != _year ||
+          old.time != _selectedTime;
+      if (dueChanged && !due.isAfter(DateTime.now())) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              "Thời gian đến hạn đã qua! Vui lòng chọn ngày giờ trong tương lai.",
+            ),
+            backgroundColor: AppColors.hpRed,
+          ),
+        );
+        return;
+      }
+    }
 
     final taskObj = TaskModel(
       id: widget.task?.id,
@@ -637,6 +810,9 @@ class _TaskFormViewState extends State<TaskFormView> {
       month: _month,
       year: _year,
       title: _titleController.text.trim(),
+      description: _descController.text.trim().isEmpty
+          ? null
+          : _descController.text.trim(),
       time: _selectedTime,
       category: _selectedCategory,
       isDaily: effectiveDaily,
@@ -646,7 +822,15 @@ class _TaskFormViewState extends State<TaskFormView> {
       isDone: widget.task?.isDone ?? false,
       locationName: _selectedGPS != "Chưa thiết lập" ? _selectedGPS : null,
       reminderEnabled: _reminderEnabled,
+      // Giữ nguyên thông tin nhóm nếu đây là việc nhóm được giao
+      groupId: widget.task?.groupId,
+      groupName: widget.task?.groupName,
     );
+
+    if (_isGroupMode) {
+      await _saveGroupTask(taskObj, user);
+      return;
+    }
 
     int taskId;
     if (widget.task == null) {
@@ -667,6 +851,7 @@ class _TaskFormViewState extends State<TaskFormView> {
           month: taskObj.month,
           year: taskObj.year,
           isDaily: taskObj.isDaily,
+          description: taskObj.description,
         );
       } else {
         await NotificationService().cancelTaskReminder(taskId);
@@ -677,6 +862,71 @@ class _TaskFormViewState extends State<TaskFormView> {
     Navigator.pop(context, true);
   }
 
+  // Lưu việc nhóm: giao mới hoặc cập nhật (có thể đổi người đảm nhận)
+  Future<void> _saveGroupTask(TaskModel draft, UserModel leader) async {
+    final group = _group;
+    final assigneeId = _assigneeId;
+    if (!_canEdit || group == null || assigneeId == null) return;
+
+    final db = DatabaseHelper.instance;
+    final taskObj = draft.copyWith(
+      category: DatabaseHelper.groupCategoryName,
+      isDaily: false,
+    );
+
+    int taskId;
+    if (widget.task == null) {
+      taskId = await db.assignGroupTask(
+        group: group,
+        leaderId: leader.id!,
+        leaderName: leader.name,
+        assigneeId: assigneeId,
+        task: taskObj,
+      );
+    } else {
+      await db.updateGroupTask(
+        group: group,
+        leaderId: leader.id!,
+        leaderName: leader.name,
+        oldAssigneeId: widget.task!.ownerId ?? assigneeId,
+        newAssigneeId: assigneeId,
+        task: taskObj,
+      );
+      taskId = widget.task!.id ?? 0;
+    }
+
+    // Nhắc nhở chỉ đặt trên máy của người đảm nhận (ở đây: khi giao cho chính mình)
+    if (taskId > 0) {
+      if (_reminderEnabled && assigneeId == leader.id) {
+        await NotificationService().scheduleTaskReminder(
+          taskId: taskId,
+          title: taskObj.title,
+          category: taskObj.category,
+          timeHHmm: taskObj.time,
+          day: taskObj.day,
+          month: taskObj.month,
+          year: taskObj.year,
+          isDaily: false,
+          description: taskObj.description,
+        );
+      } else {
+        await NotificationService().cancelTaskReminder(taskId);
+      }
+    }
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          widget.task == null
+              ? 'Đã giao "${taskObj.title}" cho ${_assigneeName.replaceAll(" (Bạn)", "")}'
+              : 'Đã cập nhật việc nhóm "${taskObj.title}"',
+        ),
+      ),
+    );
+    Navigator.pop(context, true);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -684,11 +934,17 @@ class _TaskFormViewState extends State<TaskFormView> {
         backgroundColor: AppColors.background,
         elevation: 0,
         title: Text(
-          widget.task == null ? "Thêm nhắc nhở / việc" : "Chi tiết công việc",
+          widget.group != null
+              ? "Giao công việc"
+              : widget.task == null
+              ? "Thêm nhắc nhở / việc"
+              : _isGroupMode
+              ? "Chi tiết việc nhóm"
+              : "Chi tiết công việc",
           style: const TextStyle(fontWeight: FontWeight.bold),
         ),
         actions: [
-          if (widget.task != null)
+          if (widget.task != null && _canEdit)
             IconButton(
               icon: const Icon(Icons.delete_outline, color: AppColors.hpRed),
               onPressed: _deleteCurrentTask,
@@ -697,9 +953,35 @@ class _TaskFormViewState extends State<TaskFormView> {
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
-        child: Column(
+        // Người không phải nhóm trưởng chỉ được xem việc nhóm
+        child: AbsorbPointer(
+          absorbing: !_canEdit,
+          child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (_isGroupMode && !_canEdit && _members.isNotEmpty)
+              Container(
+                width: double.infinity,
+                margin: const EdgeInsets.only(bottom: 12),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppColors.gold.withAlpha(30),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: AppColors.gold.withAlpha(120)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.lock_outline, color: AppColors.gold),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        "Việc nhóm do ${_group?.leaderName ?? 'nhóm trưởng'} giao. Chỉ nhóm trưởng mới được sửa.",
+                        style: const TextStyle(color: AppColors.textMain),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             TextField(
               controller: _titleController,
               style: const TextStyle(
@@ -710,6 +992,18 @@ class _TaskFormViewState extends State<TaskFormView> {
               decoration: const InputDecoration(
                 hintText: "Bạn cần nhắc việc gì?",
                 hintStyle: TextStyle(color: AppColors.textSub, fontSize: 22),
+                border: InputBorder.none,
+              ),
+            ),
+            TextField(
+              controller: _descController,
+              minLines: 1,
+              maxLines: 4,
+              style: const TextStyle(color: AppColors.textMain, fontSize: 15),
+              decoration: const InputDecoration(
+                hintText: "Mô tả chi tiết (không bắt buộc)",
+                hintStyle: TextStyle(color: AppColors.textSub, fontSize: 15),
+                prefixIcon: Icon(Icons.notes, color: AppColors.textSub),
                 border: InputBorder.none,
               ),
             ),
@@ -734,14 +1028,31 @@ class _TaskFormViewState extends State<TaskFormView> {
             ),
             const SizedBox(height: 12),
 
-            _buildActionRow(
-              Icons.folder,
-              "Danh mục",
-              _selectedCategory,
-              onTap: _showCategoryPicker,
-            ),
+            // Việc nhóm: hiển thị tên nhóm + chọn thành viên đảm nhận
+            if (_isGroupMode) ...[
+              _buildActionRow(
+                Icons.group_outlined,
+                "Nhóm",
+                _group?.name ?? widget.task?.groupName ?? "Nhóm",
+                onTap: () {},
+              ),
+              const SizedBox(height: 12),
+              _buildActionRow(
+                Icons.person_pin_outlined,
+                "Người đảm nhận",
+                _assigneeName,
+                onTap: _showMemberPicker,
+              ),
+            ] else
+              _buildActionRow(
+                Icons.folder,
+                "Danh mục",
+                _selectedCategory,
+                onTap: _showCategoryPicker,
+              ),
             const SizedBox(height: 12),
 
+            if (!_isGroupMode) ...[
             _buildSwitchTile(
               icon: Icons.repeat,
               title: "Lặp lại mỗi ngày (Hàng ngày)",
@@ -760,6 +1071,7 @@ class _TaskFormViewState extends State<TaskFormView> {
               },
             ),
             const SizedBox(height: 12),
+            ],
 
             _buildSwitchTile(
               icon: Icons.notifications_active_outlined,
@@ -841,6 +1153,7 @@ class _TaskFormViewState extends State<TaskFormView> {
             ),
 
             const SizedBox(height: 28),
+            if (_canEdit)
             SizedBox(
               width: double.infinity,
               height: 55,
@@ -853,7 +1166,11 @@ class _TaskFormViewState extends State<TaskFormView> {
                 ),
                 onPressed: _saveTask,
                 child: Text(
-                  widget.task == null ? "LƯU CÔNG VIỆC" : "CẬP NHẬT",
+                  widget.group != null
+                      ? "GIAO VIỆC"
+                      : widget.task == null
+                      ? "LƯU CÔNG VIỆC"
+                      : "CẬP NHẬT",
                   style: const TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.bold,
@@ -863,6 +1180,7 @@ class _TaskFormViewState extends State<TaskFormView> {
               ),
             ),
           ],
+        ),
         ),
       ),
     );

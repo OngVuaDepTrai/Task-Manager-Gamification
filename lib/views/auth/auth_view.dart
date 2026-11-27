@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../../core/app_colors.dart';
 import '../../core/database_helper.dart';
 import '../../core/app_session.dart';
 import '../../models/user_model.dart';
+import '../../services/notification_service.dart';
+import '../../view_models/gamification_view_model.dart';
 import '../main_navigation.dart';
 
 class AuthView extends StatefulWidget {
@@ -53,7 +56,22 @@ class _AuthViewState extends State<AuthView> {
       if (user != null) {
         if (!mounted) return;
         AppSession.currentUser = user; // Lưu Session
-        _showMsg("Đăng nhập thành công! Chào ${user.name}");
+
+        // Xét thưởng/phạt cho các ngày đã qua kể từ lần xét gần nhất
+        final summary = await context
+            .read<GamificationViewModel>()
+            .evaluatePastDays();
+
+        // Xin quyền thông báo & đặt lại lịch nhắc nhở của tài khoản này
+        await NotificationService().requestPermissions();
+        await NotificationService().rescheduleAllForUser(user.id!);
+        if (!mounted) return;
+
+        _showMsg(
+          summary.hasChanges
+              ? "Chào ${user.name}! ${summary.toMessage()}"
+              : "Đăng nhập thành công! Chào ${user.name}",
+        );
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(builder: (context) => const MainNavigation()),
@@ -87,6 +105,9 @@ class _AuthViewState extends State<AuthView> {
       if (createdUser != null) {
         if (!mounted) return;
         AppSession.currentUser = createdUser; // Lưu Session
+        await NotificationService().requestPermissions();
+        await NotificationService().cancelAll(); // Xóa lịch nhắc của tài khoản trước
+        if (!mounted) return;
         _showMsg("Đăng ký thành công! Đang tự động đăng nhập...");
         Navigator.pushReplacement(
           context,
