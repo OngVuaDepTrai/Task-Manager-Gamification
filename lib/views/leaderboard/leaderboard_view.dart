@@ -1,3 +1,8 @@
+import 'package:provider/provider.dart';
+
+import '../../view_models/gamification_view_model.dart';
+import '../../core/app_session.dart';
+
 import 'package:flutter/material.dart';
 
 import '../../core/app_colors.dart';
@@ -7,41 +12,24 @@ class LeaderboardView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Dữ liệu giả lập bạn bè
-    final List<Map<String, dynamic>> friends = [
-      {
-        "rank": 1,
-        "name": "Phan Tấn Thành",
-        "streak": 22,
-        "color": AppColors.gold,
-      },
-      {
-        "rank": 2,
-        "name": "Huỳnh Thanh Tài (Bạn)",
-        "streak": 15,
-        "color": Colors.grey.shade400,
-      },
-      {
-        "rank": 3,
-        "name": "Minh Nhật",
-        "streak": 10,
-        "color": Colors.brown.shade300,
-      },
-      {
-        "rank": 4,
-        "name": "Đức Nguyễn",
-        "streak": 5,
-        "color": Colors.transparent,
-      },
+    final leaders = context.watch<GamificationViewModel>().ranking;
+    final friends = <Map<String, dynamic>>[
+      for (var i = 0; i < leaders.length; i++)
+        {
+          'rank': i + 1,
+          'me': leaders[i]['id'] == AppSession.currentUser?.id,
+          'name': leaders[i]['name'],
+          'streak': leaders[i]['currentStreak'],
+          'color': i == 0 ? AppColors.gold : Colors.transparent,
+        },
     ];
-
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
         backgroundColor: AppColors.background,
         elevation: 0,
         title: const Text(
-          'Bảng Xếp Hạng Chuỗi',
+          'Xếp hạng bạn bè · Cục bộ',
           style: TextStyle(
             color: AppColors.textMain,
             fontWeight: FontWeight.bold,
@@ -53,7 +41,7 @@ class LeaderboardView extends StatelessWidget {
         itemCount: friends.length,
         itemBuilder: (context, index) {
           var friend = friends[index];
-          bool isMe = friend["name"].contains("(Bạn)");
+          bool isMe = friend["me"] == true;
 
           return Container(
             margin: const EdgeInsets.only(bottom: 12),
@@ -94,7 +82,7 @@ class LeaderboardView extends StatelessWidget {
                 const SizedBox(width: 16),
                 Expanded(
                   child: Text(
-                    friend["name"],
+                    "${friend['name']}${isMe ? ' (Bạn)' : ''}",
                     style: TextStyle(
                       color: isMe ? AppColors.primary : AppColors.textMain,
                       fontSize: 16,

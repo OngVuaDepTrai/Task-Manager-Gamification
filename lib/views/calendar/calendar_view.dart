@@ -114,7 +114,15 @@ class _CalendarViewState extends State<CalendarView> {
       return _DayDotType.redNormalTask;
     }
 
-    final hasDailyTask = allStoredTasks.any((t) => t.isDaily);
+    final hasDailyTask = allStoredTasks.any(
+      (t) =>
+          t.isDaily &&
+          !DateTime(
+            currentYear,
+            currentMonth,
+            day,
+          ).isBefore(DateTime(t.year, t.month, t.day)),
+    );
     if (hasDailyTask) {
       return _DayDotType.yellowDailyOnly;
     }

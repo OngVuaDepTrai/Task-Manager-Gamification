@@ -73,7 +73,7 @@ class TaskModel {
   }
 
   bool isOverdue([DateTime? now]) {
-    if (isDone || isDaily) return false;
+    if (isDone) return false;
     final current = now ?? DateTime.now();
     final parts = time.split(':');
     final hour = parts.isNotEmpty ? (int.tryParse(parts[0]) ?? 23) : 23;

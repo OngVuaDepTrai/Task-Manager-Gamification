@@ -253,14 +253,6 @@ class _AuthViewState extends State<AuthView> {
                     style: const TextStyle(color: AppColors.primary),
                   ),
                 ),
-
-                // Mẹo tài khoản test cho Giảng viên xem
-                const SizedBox(height: 20),
-                const Text(
-                  "Tài khoản test:\nPro: pro@test.com - Test@123\nMới: new@test.com - Test@123",
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: AppColors.textSub, fontSize: 12),
-                ),
               ],
             ),
           ),

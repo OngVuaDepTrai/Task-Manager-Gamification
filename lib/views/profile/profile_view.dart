@@ -1,3 +1,7 @@
+import 'package:provider/provider.dart';
+
+import '../../view_models/gamification_view_model.dart';
+
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -6,7 +10,7 @@ import 'package:image_picker/image_picker.dart';
 import '../../core/app_colors.dart';
 import '../../core/app_session.dart';
 import '../../core/database_helper.dart';
-import '../../models/user_model.dart';
+import '../../services/notification_service.dart';
 import '../auth/auth_view.dart';
 
 class ProfileView extends StatefulWidget {
@@ -20,37 +24,14 @@ class _ProfileViewState extends State<ProfileView> {
   final ImagePicker _picker = ImagePicker();
 
   // Danh sách các Icon mặc định của ứng dụng
-  final List<IconData> _defaultIcons = [
-    Icons.sentiment_satisfied_alt,
-    Icons.pets,
-    Icons.rocket_launch,
-    Icons.sports_esports,
-    Icons.music_note,
-    Icons.local_fire_department,
-    Icons.face,
-    Icons.star,
-  ];
 
   // Hàm chung để cập nhật avatarPath lên Database và Session
   Future<void> _updateAvatarPath(String newPath) async {
     final user = AppSession.currentUser;
     if (user != null) {
-      final updatedUser = UserModel(
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        password: user.password,
-        exp: user.exp,
-        gold: user.gold,
-        currentStreak: user.currentStreak,
-        longestStreak: user.longestStreak,
-        avatarPath: newPath,
-      );
-
-      await DatabaseHelper.instance.updateUserStats(updatedUser);
-      setState(() {
-        AppSession.currentUser = updatedUser;
-      });
+      final game = context.read<GamificationViewModel>();
+      await DatabaseHelper.instance.updateAvatar(user.id!, newPath);
+      await game.refresh();
     }
   }
 
@@ -99,9 +80,9 @@ class _ProfileViewState extends State<ProfileView> {
                     crossAxisSpacing: 15,
                     mainAxisSpacing: 15,
                   ),
-                  itemCount: _defaultIcons.length,
+                  itemCount: AppColors.avatarIcons.length,
                   itemBuilder: (context, index) {
-                    final icon = _defaultIcons[index];
+                    final icon = AppColors.avatarIcons[index];
                     return GestureDetector(
                       onTap: () {
                         // Lưu codePoint của Icon với tiền tố "icon:"
@@ -209,12 +190,11 @@ class _ProfileViewState extends State<ProfileView> {
 
     // 2. Nếu là Icon mặc định (có chữ icon: ở đầu)
     if (path.startsWith('icon:')) {
-      int codePoint = int.parse(path.split(':')[1]);
       return CircleAvatar(
         radius: radius,
         backgroundColor: AppColors.primary,
         child: Icon(
-          IconData(codePoint, fontFamily: 'MaterialIcons'),
+          AppColors.avatarIcon(path),
           size: radius,
           color: Colors.white,
         ),
@@ -232,6 +212,7 @@ class _ProfileViewState extends State<ProfileView> {
   @override
   Widget build(BuildContext context) {
     final user = AppSession.currentUser;
+    context.watch<GamificationViewModel>();
     final int exp = user?.exp ?? 0;
     final int level = (exp ~/ 100) + 1;
     final double expProgress = (exp % 100) / 100.0;
@@ -443,7 +424,9 @@ class _ProfileViewState extends State<ProfileView> {
                   "ĐĂNG XUẤT",
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                 ),
-                onPressed: () {
+                onPressed: () async {
+                  await NotificationService().clear();
+                  if (!context.mounted) return;
                   AppSession.currentUser = null;
                   Navigator.pushAndRemoveUntil(
                     context,

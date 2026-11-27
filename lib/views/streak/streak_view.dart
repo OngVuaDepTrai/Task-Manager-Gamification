@@ -1,3 +1,8 @@
+import 'package:provider/provider.dart';
+
+import '../../view_models/gamification_view_model.dart';
+import '../../services/game_store.dart';
+
 import 'package:flutter/material.dart';
 
 import '../../core/app_colors.dart';
@@ -8,6 +13,7 @@ class StreakView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final game = context.watch<GamificationViewModel>();
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
@@ -28,7 +34,7 @@ class StreakView extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _buildCurrentStreakCard(),
+              _buildCurrentStreakCard(game),
               const SizedBox(height: 20),
 
               const Text(
@@ -41,7 +47,7 @@ class StreakView extends StatelessWidget {
               ),
               const SizedBox(height: 12),
 
-              _buildWeekActivity(),
+              _buildWeekActivity(game),
 
               const SizedBox(height: 24),
 
@@ -55,7 +61,7 @@ class StreakView extends StatelessWidget {
               ),
               const SizedBox(height: 12),
 
-              _buildStatistics(),
+              _buildStatistics(game),
 
               const SizedBox(height: 24),
 
@@ -77,14 +83,14 @@ class StreakView extends StatelessWidget {
     );
   }
 
-  Widget _buildCurrentStreakCard() {
+  Widget _buildCurrentStreakCard(GamificationViewModel game) {
     final user = AppSession.currentUser;
     final int currentStreak = user?.currentStreak ?? 0;
     final int longestStreak = user?.longestStreak ?? 0;
     final int exp = user?.exp ?? 0;
-    final int completedTasks =
-        exp ~/ 20; // Mô phỏng số task đã làm dựa trên EXP (20 điểm/task)
-
+    final int completedTasks = game.events
+        .where((e) => e['kind'] == 'complete')
+        .length;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(22),
@@ -196,173 +202,86 @@ class StreakView extends StatelessWidget {
     );
   }
 
-  Widget _buildWeekActivity() {
-    final user = AppSession.currentUser;
-    final int streak = user?.currentStreak ?? 0;
-
-    // Dựa vào chuỗi hiện tại để "thắp sáng" ngọn lửa tuần lùi lại. Account trắng (streak = 0) sẽ không có lửa.
-    final List<Map<String, dynamic>> days = [
-      {"day": "T2", "date": "21", "done": streak >= 5},
-      {"day": "T3", "date": "22", "done": streak >= 4},
-      {"day": "T4", "date": "23", "done": streak >= 3},
-      {"day": "T5", "date": "24", "done": streak >= 2},
-      {"day": "T6", "date": "25", "done": streak >= 1},
-      {"day": "T7", "date": "26", "done": false},
-      {"day": "CN", "date": "27", "done": false},
-    ];
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 18),
-      decoration: BoxDecoration(
-        color: AppColors.card,
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: days.map((item) {
-          bool isDone = item["done"];
-
-          return Column(
+  Widget _buildWeekActivity(GamificationViewModel game) {
+    final now = DateTime.now();
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      children: List.generate(7, (i) {
+        final d = DateTime(now.year, now.month, now.day - now.weekday + 1 + i),
+            key = GameStore.date(d);
+        final kinds = game.events
+            .where((e) => e['day'] == key)
+            .map((e) => e['kind']);
+        final (icon, label, color) = kinds.contains('complete')
+            ? (Icons.local_fire_department, 'Hoàn thành', Colors.orange)
+            : kinds.contains('freeze')
+            ? (Icons.shield, 'Được bảo vệ', Colors.blue)
+            : key.compareTo(game.today) < 0
+            ? (Icons.close, 'Bỏ lỡ', Colors.redAccent)
+            : key == game.today
+            ? (Icons.today, 'Hôm nay · Chưa hoàn thành', Colors.amber)
+            : (Icons.schedule, 'Ngày chưa diễn ra', Colors.grey);
+        return Tooltip(
+          message: '$key · $label',
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Text(
-                item["day"],
-                style: const TextStyle(
-                  color: AppColors.textSub,
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-
-              const SizedBox(height: 8),
-
-              Container(
-                width: 38,
-                height: 38,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: isDone
-                      ? Colors.orange.withAlpha(45)
-                      : AppColors.background,
-                  border: Border.all(
-                    color: isDone ? Colors.orange : Colors.grey.shade800,
-                  ),
-                ),
-                child: Center(
-                  child: isDone
-                      ? const Icon(
-                          Icons.local_fire_department,
-                          color: Colors.orange,
-                          size: 22,
-                        )
-                      : Text(
-                          item["date"],
-                          style: const TextStyle(
-                            color: AppColors.textSub,
-                            fontSize: 13,
-                          ),
-                        ),
-                ),
-              ),
+              Text('${d.day}/${d.month}'),
+              Icon(icon, color: color),
             ],
-          );
-        }).toList(),
-      ),
+          ),
+        );
+      }),
     );
   }
 
-  Widget _buildStatistics() {
-    final user = AppSession.currentUser;
-    final int exp = user?.exp ?? 0;
-    final int gold = user?.gold ?? 0;
-
-    // Logic tính toán: Trung bình 1 Task 20 EXP
-    final int completedTasks = exp ~/ 20;
-    final int missedTasks = (user?.currentStreak == 0 && exp > 0)
-        ? 2
-        : 0; // Tài khoản mới mặc định 0 bỏ lỡ
-
-    return Column(
-      children: [
-        Row(
+  Widget _buildStatistics(GamificationViewModel game) {
+    final now = DateTime.now(),
+        week = GameStore.date(
+          DateTime(now.year, now.month, now.day - now.weekday + 1),
+        );
+    final month = GameStore.date(DateTime(now.year, now.month, 1));
+    int sum(String key, String kind) => game.events
+        .where((e) => e['kind'] == kind)
+        .fold(0, (n, e) => n + (e[key] as int));
+    final rate = game.total == 0 ? 0.0 : game.done / game.total;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Expanded(
-              child: _buildStatisticCard(
-                icon: Icons.task_alt,
-                iconColor: AppColors.primary,
-                value: "$completedTasks",
-                title: "Đã hoàn thành",
-              ),
+            Text('Công việc hiện có (tính từng ngày lặp): ${game.total}'),
+            Text(
+              'Đã xong: ${game.done} · Chưa xong: ${game.total - game.done} · Quá hạn: ${game.overdue}',
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _buildStatisticCard(
-                icon: Icons.cancel_outlined,
-                iconColor: AppColors.hpRed,
-                value: "$missedTasks",
-                title: "Bỏ lỡ",
-              ),
+            const SizedBox(height: 8),
+            LinearProgressIndicator(value: rate),
+            Text('Tỷ lệ hoàn thành: ${(rate * 100).round()}%'),
+            const Divider(),
+            Text(
+              'Lượt hoàn thành tuần này: ${game.completedSince(week)} · Tháng này: ${game.completedSince(month)}',
+            ),
+            Text('Tổng EXP: ${AppSession.currentUser!.exp}'),
+            Text(
+              "Vàng kiếm: ${sum('gold', 'complete')} · Vàng tiêu: ${-sum('gold', 'purchase')} · HP mất: ${-sum('hp', 'penalty')}",
+            ),
+            ExpansionTile(
+              title: const Text('Lịch sử hoạt động'),
+              children: [
+                if (game.events.isEmpty) const Text('Chưa có hoạt động'),
+                for (final e in game.events)
+                  ListTile(
+                    title: Text(e['title'] as String),
+                    subtitle: Text(
+                      "${e['day'] ?? 'Chưa lưu ngày'} · ${const {'complete': 'Hoàn thành', 'freeze': 'Dùng khiên', 'purchase': 'Đổi thưởng', 'penalty': 'Quá hạn'}[e['kind']]}",
+                    ),
+                  ),
+              ],
             ),
           ],
         ),
-
-        const SizedBox(height: 12),
-
-        Row(
-          children: [
-            Expanded(
-              child: _buildStatisticCard(
-                icon: Icons.bolt,
-                iconColor: Colors.orange,
-                value: "$exp",
-                title: "EXP nhận được",
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _buildStatisticCard(
-                icon: Icons.monetization_on,
-                iconColor: AppColors.gold,
-                value: "$gold",
-                title: "Vàng kiếm được",
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  Widget _buildStatisticCard({
-    required IconData icon,
-    required Color iconColor,
-    required String value,
-    required String title,
-  }) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.card,
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, color: iconColor, size: 28),
-          const SizedBox(height: 14),
-          Text(
-            value,
-            style: const TextStyle(
-              color: AppColors.textMain,
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            title,
-            style: const TextStyle(color: AppColors.textSub, fontSize: 13),
-          ),
-        ],
       ),
     );
   }
@@ -393,7 +312,7 @@ class StreakView extends StatelessWidget {
 
           const SizedBox(width: 14),
 
-          const Expanded(
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -407,7 +326,7 @@ class StreakView extends StatelessWidget {
                 ),
                 SizedBox(height: 4),
                 Text(
-                  "Bạn đang có 1 khiên. Khiên giúp giữ chuỗi khi bỏ lỡ một ngày.",
+                  "Bạn đang có ${AppSession.currentUser!.freezes} khiên. Khiên giúp giữ chuỗi khi bỏ lỡ một ngày.",
                   style: TextStyle(
                     color: AppColors.textSub,
                     fontSize: 13,
@@ -426,8 +345,8 @@ class StreakView extends StatelessWidget {
               color: AppColors.primary.withAlpha(30),
               borderRadius: BorderRadius.circular(20),
             ),
-            child: const Text(
-              "x1",
+            child: Text(
+              "x${AppSession.currentUser!.freezes}",
               style: TextStyle(
                 color: AppColors.primary,
                 fontWeight: FontWeight.bold,

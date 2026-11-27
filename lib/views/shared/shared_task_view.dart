@@ -1,3 +1,5 @@
+import '../../services/shared_tasks.dart';
+
 import 'package:flutter/material.dart';
 
 import '../../core/app_colors.dart';
@@ -17,11 +19,7 @@ class _SharedTaskViewState extends State<SharedTaskView> {
   List<FriendModel> _friends = [];
   bool _isLoading = true;
 
-  final List<Map<String, dynamic>> _sharedTasks = [
-    {"title": "Vẽ UML Diagram", "assignee": "Minh Nhật", "done": true},
-    {"title": "Làm giao diện Flutter", "assignee": "Thanh Tài", "done": false},
-    {"title": "Code Database SQLite", "assignee": "Tấn Thành", "done": false},
-  ];
+  List<Map<String, dynamic>> _sharedTasks = [];
 
   @override
   void initState() {
@@ -33,8 +31,10 @@ class _SharedTaskViewState extends State<SharedTaskView> {
     final user = AppSession.currentUser;
     if (user != null && user.id != null) {
       final list = await DatabaseHelper.instance.getFriends(user.id!);
-      if (!mounted) return;
+      final shared = await SharedTasks.list(user.id!);
+      if (!mounted || AppSession.currentUser?.id != user.id) return;
       setState(() {
+        _sharedTasks = shared;
         _friends = list;
         _isLoading = false;
       });
@@ -235,23 +235,21 @@ class _SharedTaskViewState extends State<SharedTaskView> {
   }
 
   void _openAssignTaskDialog() {
-    final titleController = TextEditingController();
-    String assignee = _friends.isNotEmpty
-        ? _friends.first.name
-        : (AppSession.currentUser?.name ?? "Bạn");
+    var title = '';
+    var saving = false;
+    final user = AppSession.currentUser!;
+    int assignee = user.id!;
 
     showDialog(
       context: context,
       builder: (dialogContext) {
         return StatefulBuilder(
           builder: (context, setDialogState) {
-            final options = <String>[
-              if (AppSession.currentUser != null) AppSession.currentUser!.name,
-              ..._friends.map((f) => f.name),
-            ];
-            if (!options.contains(assignee) && options.isNotEmpty) {
-              assignee = options.first;
-            }
+            final options = {
+              user.id!: user.name,
+              for (final f in _friends)
+                f.friendUserId: '${f.name} · ${f.email}',
+            };
 
             return AlertDialog(
               backgroundColor: AppColors.card,
@@ -263,7 +261,7 @@ class _SharedTaskViewState extends State<SharedTaskView> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   TextField(
-                    controller: titleController,
+                    onChanged: (value) => title = value,
                     style: const TextStyle(color: AppColors.textMain),
                     decoration: const InputDecoration(
                       hintText: "Tên nhiệm vụ chung...",
@@ -272,19 +270,23 @@ class _SharedTaskViewState extends State<SharedTaskView> {
                   ),
                   const SizedBox(height: 14),
                   if (options.isNotEmpty)
-                    DropdownButtonFormField<String>(
+                    DropdownButtonFormField<int>(
                       initialValue: assignee,
+                      isExpanded: true,
                       dropdownColor: AppColors.card,
                       style: const TextStyle(color: AppColors.textMain),
                       decoration: const InputDecoration(
                         labelText: "Phụ trách",
                         labelStyle: TextStyle(color: AppColors.textSub),
                       ),
-                      items: options
+                      items: options.entries
                           .map(
-                            (name) => DropdownMenuItem<String>(
-                              value: name,
-                              child: Text(name),
+                            (name) => DropdownMenuItem<int>(
+                              value: name.key,
+                              child: Text(
+                                name.value,
+                                overflow: TextOverflow.ellipsis,
+                              ),
                             ),
                           )
                           .toList(),
@@ -308,18 +310,28 @@ class _SharedTaskViewState extends State<SharedTaskView> {
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.primary,
                   ),
-                  onPressed: () {
-                    if (titleController.text.trim().isNotEmpty) {
-                      setState(() {
-                        _sharedTasks.add({
-                          "title": titleController.text.trim(),
-                          "assignee": assignee,
-                          "done": false,
-                        });
-                      });
-                      Navigator.pop(dialogContext);
-                    }
-                  },
+                  onPressed: saving
+                      ? null
+                      : () async {
+                          if (title.trim().isNotEmpty) {
+                            if (AppSession.currentUser?.id != user.id) return;
+                            setDialogState(() => saving = true);
+                            if (!await SharedTasks.assign(
+                              user.id!,
+                              assignee,
+                              title,
+                            )) {
+                              if (dialogContext.mounted) {
+                                setDialogState(() => saving = false);
+                              }
+                              return;
+                            }
+                            await _loadFriends();
+                            if (dialogContext.mounted) {
+                              Navigator.pop(dialogContext);
+                            }
+                          }
+                        },
                   child: const Text(
                     "Giao việc",
                     style: TextStyle(
@@ -344,7 +356,7 @@ class _SharedTaskViewState extends State<SharedTaskView> {
         backgroundColor: AppColors.background,
         elevation: 0,
         title: const Text(
-          'Bạn bè & Việc nhóm',
+          'Việc nhóm · Cục bộ',
           style: TextStyle(
             color: AppColors.textMain,
             fontWeight: FontWeight.bold,
@@ -463,9 +475,17 @@ class _SharedTaskViewState extends State<SharedTaskView> {
                     itemCount: _sharedTasks.length,
                     itemBuilder: (context, index) {
                       final task = _sharedTasks[index];
-                      final bool done = task["done"] as bool;
+                      final bool done = task["done"] == 1;
                       return GestureDetector(
-                        onTap: () => setState(() => task["done"] = !done),
+                        onTap: () async {
+                          final id = AppSession.currentUser!.id!;
+                          await SharedTasks.setDone(
+                            id,
+                            task['id'] as int,
+                            !done,
+                          );
+                          await _loadFriends();
+                        },
                         child: Container(
                           margin: const EdgeInsets.only(bottom: 12),
                           padding: const EdgeInsets.all(16),

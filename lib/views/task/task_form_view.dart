@@ -1,3 +1,6 @@
+import '../../services/location_service.dart';
+import '../../services/game_store.dart';
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -129,7 +132,7 @@ class _TaskFormViewState extends State<TaskFormView> {
     final Position currentPos = await Geolocator.getCurrentPosition(
       locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
     );
-    final double initialDistance = Geolocator.distanceBetween(
+    final double initialDistance = LocationService.distance(
       currentPos.latitude,
       currentPos.longitude,
       targetLat,
@@ -155,7 +158,7 @@ class _TaskFormViewState extends State<TaskFormView> {
             distanceFilter: 10,
           ),
         ).listen((Position position) {
-          final double distanceInMeters = Geolocator.distanceBetween(
+          final double distanceInMeters = LocationService.distance(
             position.latitude,
             position.longitude,
             targetLat,
@@ -171,6 +174,9 @@ class _TaskFormViewState extends State<TaskFormView> {
   }
 
   void _showReminderDialog(String locationName) {
+    if (_reminderEnabled) {
+      LocationService.notifyArrival(_titleController.text, locationName);
+    }
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -314,6 +320,13 @@ class _TaskFormViewState extends State<TaskFormView> {
     );
     if (picked != null) {
       setState(() {
+        _changeDailyStart =
+            picked !=
+            DateTime(
+              widget.task?.year ?? _year,
+              widget.task?.month ?? _month,
+              widget.task?.day ?? _day,
+            );
         _day = picked.day;
         _month = picked.month;
         _year = picked.year;
@@ -617,7 +630,19 @@ class _TaskFormViewState extends State<TaskFormView> {
     }
   }
 
+  bool _saving = false;
+  bool _changeDailyStart = false;
   Future<void> _saveTask() async {
+    if (_saving) return;
+    setState(() => _saving = true);
+    try {
+      await _persistTask();
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _persistTask() async {
     if (_titleController.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Vui lòng nhập tên công việc!")),
@@ -641,8 +666,12 @@ class _TaskFormViewState extends State<TaskFormView> {
       category: _selectedCategory,
       isDaily: effectiveDaily,
       isHighPriority: _isHighPriority,
-      exp: widget.task?.exp ?? 20,
-      gold: widget.task?.gold ?? 10,
+      exp: widget.task?.isHighPriority == _isHighPriority
+          ? widget.task!.exp
+          : GameStore.expFor(_isHighPriority),
+      gold: widget.task?.isHighPriority == _isHighPriority
+          ? widget.task!.gold
+          : GameStore.goldFor(_isHighPriority),
       isDone: widget.task?.isDone ?? false,
       locationName: _selectedGPS != "Chưa thiết lập" ? _selectedGPS : null,
       reminderEnabled: _reminderEnabled,
@@ -652,24 +681,33 @@ class _TaskFormViewState extends State<TaskFormView> {
     if (widget.task == null) {
       taskId = await DatabaseHelper.instance.insertTask(taskObj, user.id!);
     } else {
-      await DatabaseHelper.instance.updateTask(taskObj, user.id!);
+      try {
+        await DatabaseHelper.instance.updateTask(
+          taskObj,
+          user.id!,
+          changeDailyStart: _changeDailyStart,
+        );
+      } on StateError catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text(e.message)));
+        }
+        return;
+      }
       taskId = widget.task!.id ?? 0;
     }
 
     if (taskId > 0) {
-      if (_reminderEnabled) {
-        await NotificationService().scheduleTaskReminder(
-          taskId: taskId,
-          title: taskObj.title,
-          category: taskObj.category,
-          timeHHmm: taskObj.time,
-          day: taskObj.day,
-          month: taskObj.month,
-          year: taskObj.year,
-          isDaily: taskObj.isDaily,
-        );
-      } else {
-        await NotificationService().cancelTaskReminder(taskId);
+      try {
+        await NotificationService().syncTask(taskObj.copyWith(id: taskId));
+      } on Exception catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Đã lưu công việc. Không thể đặt nhắc nhở: $e'),
+            ),
+          );
+        }
       }
     }
 
@@ -851,7 +889,7 @@ class _TaskFormViewState extends State<TaskFormView> {
                     borderRadius: BorderRadius.circular(16),
                   ),
                 ),
-                onPressed: _saveTask,
+                onPressed: _saving ? null : _saveTask,
                 child: Text(
                   widget.task == null ? "LƯU CÔNG VIỆC" : "CẬP NHẬT",
                   style: const TextStyle(

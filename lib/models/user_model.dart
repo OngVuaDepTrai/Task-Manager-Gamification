@@ -3,6 +3,8 @@ class UserModel {
   final String name;
   final String email;
   final String password;
+  final int hp;
+  final int freezes;
   final int exp;
   final int gold;
   final int currentStreak;
@@ -14,6 +16,8 @@ class UserModel {
     required this.name,
     required this.email,
     required this.password,
+    this.hp = 100,
+    this.freezes = 0,
     this.exp = 0,
     this.gold = 0,
     this.currentStreak = 0,
@@ -41,6 +45,8 @@ class UserModel {
       name: map['name'],
       email: map['email'],
       password: map['password'],
+      hp: map['hp'] ?? 100,
+      freezes: map['freezes'] ?? 0,
       exp: map['exp'] ?? 0,
       gold: map['gold'] ?? 0,
       currentStreak: map['currentStreak'] ?? 0,

@@ -1,6 +1,7 @@
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
 
+import '../services/game_store.dart';
 import '../models/friend_model.dart';
 import '../models/task_model.dart';
 import '../models/user_model.dart';
@@ -14,7 +15,7 @@ class DatabaseHelper {
   DatabaseHelper._init();
 
   Future<Database> get database async {
-    if (_database != null) return _database!;
+    if (_database?.isOpen == true) return _database!;
     _database = await _initDB('gamification_app_v7.db');
     return _database!;
   }
@@ -22,7 +23,15 @@ class DatabaseHelper {
   Future<Database> _initDB(String filePath) async {
     final dbPath = await getDatabasesPath();
     final path = join(dbPath, filePath);
-    return await openDatabase(path, version: 1, onCreate: _createDB);
+    return await openDatabase(
+      path,
+      version: 2,
+      onConfigure: (db) => db.execute('PRAGMA foreign_keys=ON'),
+      onCreate: _createDB,
+      onUpgrade: (db, old, _) async {
+        if (old < 2) await GameStore.migrate(db);
+      },
+    );
   }
 
   String formatDateKey(int day, int month, int year) {
@@ -103,30 +112,7 @@ class DatabaseHelper {
     )
     ''');
 
-    await db.execute('''
-      INSERT INTO users (name, email, password, exp, gold, currentStreak, longestStreak)
-      VALUES ('Tài (Newbie)', 'new@test.com', 'Test@123', 0, 0, 0, 0)
-    ''');
-
-    await db.execute('''
-      INSERT INTO users (name, email, password, exp, gold, currentStreak, longestStreak)
-      VALUES ('Tài (Pro)', 'pro@test.com', 'Test@123', 1500, 500, 15, 21)
-    ''');
-
-    await db.execute('''
-      INSERT INTO users (name, email, password, exp, gold, currentStreak, longestStreak)
-      VALUES ('Minh Nhật', 'nhat@test.com', 'Test@123', 640, 220, 10, 14)
-    ''');
-
-    await db.execute('''
-      INSERT INTO users (name, email, password, exp, gold, currentStreak, longestStreak)
-      VALUES ('Tấn Thành', 'thanh@test.com', 'Test@123', 1120, 400, 22, 22)
-    ''');
-
-    await db.execute('''
-      INSERT INTO users (name, email, password, exp, gold, currentStreak, longestStreak)
-      VALUES ('Đức Nguyễn', 'duc@test.com', 'Test@123', 320, 120, 5, 8)
-    ''');
+    await GameStore.migrate(db);
   }
 
   // ====================== USER LOGIC ======================
@@ -165,13 +151,13 @@ class DatabaseHelper {
     return null;
   }
 
-  Future<int> updateUserStats(UserModel user) async {
+  Future<int> updateAvatar(int id, String path) async {
     final db = await instance.database;
     return await db.update(
       'users',
-      user.toMap(),
+      {'avatarPath': path},
       where: 'id = ?',
-      whereArgs: [user.id],
+      whereArgs: [id],
     );
   }
 
@@ -245,29 +231,61 @@ class DatabaseHelper {
     return await db.insert('tasks', task.toMap(userId));
   }
 
-  Future<int> updateTask(TaskModel task, int userId) async {
+  Future<int> updateTask(
+    TaskModel task,
+    int userId, {
+    bool changeDailyStart = false,
+  }) async {
     if (task.id == null) return 0;
     final db = await instance.database;
-    return await db.update(
-      'tasks',
-      task.toMap(userId),
-      where: 'id = ? AND user_id = ?',
-      whereArgs: [task.id, userId],
-    );
+    final values = task.toMap(userId)..remove('isDone');
+    return db.transaction((tx) async {
+      await GameStore.reconcile(tx, userId, DateTime.now());
+      final old = await tx.query(
+        'tasks',
+        where: 'id=? AND user_id=?',
+        whereArgs: [task.id, userId],
+      );
+      if (old.isEmpty) return 0;
+      if (old.first['isDaily'] == 1 && task.isDaily && !changeDailyStart) {
+        for (final key in ['day', 'month', 'year']) {
+          values.remove(key);
+        }
+      }
+      if (old.first['isDaily'] != values['isDaily'] ||
+          (task.isDaily && changeDailyStart)) {
+        final history = await tx.query(
+          'events',
+          where: 'task_id=? AND user_id=?',
+          whereArgs: [task.id, userId],
+          limit: 1,
+        );
+        if (history.isNotEmpty) {
+          throw StateError(
+            'Không thể đổi chế độ lặp hoặc ngày bắt đầu sau khi đã ghi nhận hoạt động.',
+          );
+        }
+      }
+      if (changeDailyStart) values['checked_day'] = null;
+      return tx.update(
+        'tasks',
+        values,
+        where: 'id = ? AND user_id = ?',
+        whereArgs: [task.id, userId],
+      );
+    });
   }
 
   Future<int> deleteTask(int taskId, int userId) async {
     final db = await instance.database;
-    await db.delete(
-      'daily_task_completions',
-      where: 'task_id = ? AND user_id = ?',
-      whereArgs: [taskId, userId],
-    );
-    return await db.delete(
-      'tasks',
-      where: 'id = ? AND user_id = ?',
-      whereArgs: [taskId, userId],
-    );
+    return db.transaction((tx) async {
+      await GameStore.reconcile(tx, userId, DateTime.now());
+      return tx.delete(
+        'tasks',
+        where: 'id = ? AND user_id = ?',
+        whereArgs: [taskId, userId],
+      );
+    });
   }
 
   Future<List<TaskModel>> getTasks(int userId) async {
@@ -311,6 +329,13 @@ class DatabaseHelper {
     for (final map in rawTasks) {
       final task = TaskModel.fromMap(map);
       if (task.isDaily) {
+        if (DateTime(
+          year,
+          month,
+          day,
+        ).isBefore(DateTime(task.year, task.month, task.day))) {
+          continue;
+        }
         final doneOnThisDay =
             task.id != null && completedDailyIds.contains(task.id);
         result.add(
@@ -326,46 +351,6 @@ class DatabaseHelper {
       }
     }
     return result;
-  }
-
-  Future<void> setTaskCompletionForDate({
-    required int userId,
-    required TaskModel task,
-    required bool isDone,
-    required int day,
-    required int month,
-    required int year,
-  }) async {
-    final db = await instance.database;
-    if (task.isDaily && task.id != null) {
-      final dateKey = formatDateKey(day, month, year);
-      if (isDone) {
-        await db.insert('daily_task_completions', {
-          'user_id': userId,
-          'task_id': task.id,
-          'date_key': dateKey,
-          'is_done': 1,
-        }, conflictAlgorithm: ConflictAlgorithm.replace);
-      } else {
-        await db.delete(
-          'daily_task_completions',
-          where: 'user_id = ? AND task_id = ? AND date_key = ?',
-          whereArgs: [userId, task.id, dateKey],
-        );
-      }
-    } else if (task.id != null) {
-      await updateTaskStatus(task.id!, isDone);
-    }
-  }
-
-  Future<int> updateTaskStatus(int taskId, bool isDone) async {
-    final db = await instance.database;
-    return await db.update(
-      'tasks',
-      {'isDone': isDone ? 1 : 0},
-      where: 'id = ?',
-      whereArgs: [taskId],
-    );
   }
 
   // ====================== CATEGORY LOGIC ======================
@@ -446,18 +431,20 @@ class DatabaseHelper {
     if (oldName == dailyCategoryName) return;
     final db = await instance.database;
     final cleanNewName = newName.trim();
-    await db.update(
-      'categories',
-      {'name': cleanNewName},
-      where: 'id = ? AND user_id = ?',
-      whereArgs: [categoryId, userId],
-    );
-    await db.update(
-      'tasks',
-      {'category': cleanNewName},
-      where: 'user_id = ? AND category = ?',
-      whereArgs: [userId, oldName],
-    );
+    await db.transaction((tx) async {
+      await tx.update(
+        'categories',
+        {'name': cleanNewName},
+        where: 'id = ? AND user_id = ?',
+        whereArgs: [categoryId, userId],
+      );
+      await tx.update(
+        'tasks',
+        {'category': cleanNewName},
+        where: 'user_id = ? AND category = ?',
+        whereArgs: [userId, oldName],
+      );
+    });
   }
 
   Future<void> deleteCategoryAndTasks(
@@ -467,16 +454,18 @@ class DatabaseHelper {
   ) async {
     if (categoryName == dailyCategoryName) return;
     final db = await instance.database;
-    await db.delete(
-      'categories',
-      where: 'id = ? AND user_id = ?',
-      whereArgs: [categoryId, userId],
-    );
-    await db.update(
-      'tasks',
-      {'category': 'Khác', 'isDaily': 0},
-      where: 'user_id = ? AND category = ?',
-      whereArgs: [userId, categoryName],
-    );
+    await db.transaction((tx) async {
+      await tx.delete(
+        'categories',
+        where: 'id = ? AND user_id = ?',
+        whereArgs: [categoryId, userId],
+      );
+      await tx.update(
+        'tasks',
+        {'category': 'Khác'},
+        where: 'user_id = ? AND category = ?',
+        whereArgs: [userId, categoryName],
+      );
+    });
   }
 }

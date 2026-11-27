@@ -1,3 +1,9 @@
+import 'package:provider/provider.dart';
+
+import '../../view_models/gamification_view_model.dart';
+import '../../view_models/task_view_model.dart';
+import '../../services/notification_service.dart';
+
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -6,7 +12,7 @@ import '../../core/app_colors.dart';
 import '../../core/app_session.dart';
 import '../../core/database_helper.dart';
 import '../../models/task_model.dart';
-import '../../models/user_model.dart';
+
 import '../../widgets/task_card_widget.dart';
 import '../task/task_form_view.dart';
 import '../profile/profile_view.dart';
@@ -22,6 +28,8 @@ class HomeView extends StatefulWidget {
 }
 
 class _HomeViewState extends State<HomeView> {
+  final saving = <int>{};
+  String? loadedDay;
   List<String> categories = ['Tất cả'];
   String selectedCategory = 'Tất cả';
 
@@ -45,20 +53,26 @@ class _HomeViewState extends State<HomeView> {
   Future<void> _loadTasksAndCategories() async {
     final user = AppSession.currentUser;
     if (user != null && user.id != null) {
+      final game = context.read<GamificationViewModel>();
       final now = DateTime.now();
-      final tasks = await DatabaseHelper.instance.getTasksForDate(
-        user.id!,
-        now.day,
-        now.month,
-        now.year,
+      final tasks = await context.read<TaskViewModel>().forDay(now);
+      final all = await DatabaseHelper.instance.getTasks(user.id!);
+      final overdue = all.where(
+        (t) =>
+            !t.isDaily &&
+            t.isOverdue(now) &&
+            !tasks.any((today) => today.id == t.id),
       );
       final dbCategories = await DatabaseHelper.instance.getCategories(
         user.id!,
       );
 
+      if (AppSession.currentUser?.id != user.id) return;
+      await game.refresh();
       if (!mounted) return;
       setState(() {
-        todayTasks = tasks;
+        loadedDay = now.toIso8601String().substring(0, 10);
+        todayTasks = [...tasks, ...overdue];
         categories = [
           'Tất cả',
           ...dbCategories.map((c) => c['name'] as String),
@@ -77,6 +91,13 @@ class _HomeViewState extends State<HomeView> {
 
   @override
   Widget build(BuildContext context) {
+    context.watch<GamificationViewModel>();
+    if (loadedDay != null &&
+        loadedDay != DateTime.now().toIso8601String().substring(0, 10)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _loadTasksAndCategories();
+      });
+    }
     final pendingCount = todayTasks.where((t) => !t.isDone).length;
 
     return Scaffold(
@@ -222,12 +243,11 @@ class _HomeViewState extends State<HomeView> {
                   );
                 }
                 if (path.startsWith('icon:')) {
-                  int codePoint = int.parse(path.split(':')[1]);
                   return CircleAvatar(
                     radius: 24,
                     backgroundColor: AppColors.primary,
                     child: Icon(
-                      IconData(codePoint, fontFamily: 'MaterialIcons'),
+                      AppColors.avatarIcon(path),
                       size: 24,
                       color: Colors.white,
                     ),
@@ -247,7 +267,7 @@ class _HomeViewState extends State<HomeView> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  "Lv. $level - Cấp độ",
+                  "Lv. $level · HP ${user?.hp ?? 100}/100",
                   style: const TextStyle(
                     fontWeight: FontWeight.bold,
                     color: AppColors.textMain,
@@ -255,7 +275,7 @@ class _HomeViewState extends State<HomeView> {
                 ),
                 const SizedBox(height: 4),
                 LinearProgressIndicator(
-                  value: 1.0,
+                  value: (user?.hp ?? 100) / 100,
                   color: AppColors.hpRed,
                   backgroundColor: Colors.grey[800],
                 ),
@@ -487,50 +507,39 @@ class _HomeViewState extends State<HomeView> {
             }
           },
           onComplete: () async {
-            if (!task.isDone) {
-              setState(() => task.isDone = true);
-
-              final user = AppSession.currentUser;
-              if (user != null && user.id != null) {
-                final updatedUser = UserModel(
-                  id: user.id,
-                  name: user.name,
-                  email: user.email,
-                  password: user.password,
-                  exp: user.exp + task.exp,
-                  gold: user.gold + task.gold,
-                  currentStreak: user.currentStreak == 0
-                      ? 1
-                      : user.currentStreak,
-                  longestStreak: user.longestStreak == 0
-                      ? 1
-                      : user.longestStreak,
-                  avatarPath: user.avatarPath,
+            if (!saving.add(task.id!)) return;
+            final before = AppSession.currentUser!.exp ~/ 100;
+            try {
+              final awarded = await context.read<TaskViewModel>().setDone(
+                task,
+                !task.isDone,
+                DateTime.now(),
+              );
+              String? reminderError;
+              try {
+                await NotificationService().syncTask(
+                  task.copyWith(isDone: !task.isDone),
                 );
-
-                AppSession.currentUser = updatedUser;
-                await DatabaseHelper.instance.updateUserStats(updatedUser);
-
-                await DatabaseHelper.instance.setTaskCompletionForDate(
-                  userId: user.id!,
-                  task: task,
-                  isDone: true,
-                  day: now.day,
-                  month: now.month,
-                  year: now.year,
-                );
+              } on Exception catch (e) {
+                reminderError = 'Nhắc nhở: $e';
               }
-
               if (!mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(
+              await _loadTasksAndCategories();
+              if (!mounted) return;
+              final level = AppSession.currentUser!.exp ~/ 100;
+
+              ScaffoldMessenger.of(this.context).showSnackBar(
                 SnackBar(
                   content: Text(
-                    '🎉 Hoàn thành "${task.title}"! +${task.exp} EXP & +${task.gold} Vàng',
+                    reminderError ??
+                        (awarded
+                            ? '+${task.exp} EXP · +${task.gold} Vàng${level > before ? " · Lên cấp ${level + 1}!" : ""}'
+                            : 'Đã cập nhật trạng thái. Phần thưởng chỉ nhận một lần.'),
                   ),
-                  backgroundColor: Colors.green,
                 ),
               );
-              setState(() {});
+            } finally {
+              saving.remove(task.id);
             }
           },
         );
