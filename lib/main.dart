@@ -1,15 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'core/app_colors.dart';
+import 'core/supabase_config.dart';
 import 'services/notification_service.dart';
-import 'views/auth/auth_view.dart';
+import 'views/auth/auth_gate.dart';
 import 'view_models/task_view_model.dart';
 import 'view_models/gamification_view_model.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // Khởi tạo thông báo nhắc nhở (hẹn giờ qua hệ điều hành)
+  await Supabase.initialize(
+    url: SupabaseConfig.url,
+    anonKey: SupabaseConfig.anonKey,
+  );
   await NotificationService().initService();
   runApp(const MyApp());
 }
@@ -19,7 +24,6 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Bọc MultiProvider ở cấp cao nhất để chuẩn bị kết nối Logic (Tuần 9 - GĐ2)
     return MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => TaskViewModel()),
@@ -31,7 +35,7 @@ class MyApp extends StatelessWidget {
         theme: ThemeData.dark().copyWith(
           scaffoldBackgroundColor: AppColors.background,
         ),
-        home: const AuthView(),
+        home: const AuthGate(),
       ),
     );
   }

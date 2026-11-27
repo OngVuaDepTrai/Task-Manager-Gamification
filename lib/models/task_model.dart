@@ -13,6 +13,10 @@ class TaskModel {
   final int gold;
   bool isDone;
   final String? locationName;
+  // Nhắc nhở theo vị trí: tọa độ + bán kính (mét). Null nếu không đặt.
+  final double? locationLat;
+  final double? locationLng;
+  final int locationRadius;
   final bool reminderEnabled;
   // Việc nhóm được giao: id và tên nhóm (null nếu là việc cá nhân)
   final int? groupId;
@@ -21,6 +25,7 @@ class TaskModel {
   final int? ownerId;
 
   bool get isGroupTask => groupId != null;
+  bool get hasLocation => locationLat != null && locationLng != null;
 
   TaskModel({
     this.id,
@@ -37,6 +42,9 @@ class TaskModel {
     this.gold = 10,
     this.isDone = false,
     this.locationName,
+    this.locationLat,
+    this.locationLng,
+    this.locationRadius = 300,
     this.reminderEnabled = true,
     this.groupId,
     this.groupName,
@@ -59,6 +67,9 @@ class TaskModel {
     int? gold,
     bool? isDone,
     String? locationName,
+    double? locationLat,
+    double? locationLng,
+    int? locationRadius,
     bool? reminderEnabled,
     int? groupId,
     String? groupName,
@@ -79,6 +90,9 @@ class TaskModel {
       gold: gold ?? this.gold,
       isDone: isDone ?? this.isDone,
       locationName: locationName ?? this.locationName,
+      locationLat: locationLat ?? this.locationLat,
+      locationLng: locationLng ?? this.locationLng,
+      locationRadius: locationRadius ?? this.locationRadius,
       reminderEnabled: reminderEnabled ?? this.reminderEnabled,
       groupId: groupId ?? this.groupId,
       groupName: groupName ?? this.groupName,
@@ -119,6 +133,9 @@ class TaskModel {
       'exp_reward': exp,
       'gold_reward': gold,
       'locationName': locationName,
+      'locationLat': locationLat,
+      'locationLng': locationLng,
+      'locationRadius': locationRadius,
       'reminderEnabled': reminderEnabled ? 1 : 0,
       'group_id': groupId,
       'group_name': groupName,
@@ -142,6 +159,9 @@ class TaskModel {
       exp: map['exp_reward'] ?? 20,
       gold: map['gold_reward'] ?? 10,
       locationName: map['locationName'],
+      locationLat: (map['locationLat'] as num?)?.toDouble(),
+      locationLng: (map['locationLng'] as num?)?.toDouble(),
+      locationRadius: (map['locationRadius'] as num?)?.toInt() ?? 300,
       reminderEnabled: (map['reminderEnabled'] ?? 1) == 1,
       groupId: map['group_id'],
       groupName: map['group_name'],

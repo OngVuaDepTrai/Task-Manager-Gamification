@@ -7,7 +7,9 @@ import '../core/database_helper.dart';
 import '../core/game_rules.dart';
 import '../models/task_model.dart';
 import '../models/user_model.dart';
+import '../services/location_service.dart';
 import '../services/notification_service.dart';
+import '../services/widget_service.dart';
 
 // Kết quả khi hoàn thành 1 nhắc nhở
 class TaskRewardResult {
@@ -61,6 +63,8 @@ class GamificationViewModel extends ChangeNotifier {
     AppSession.currentUser = updated;
     await DatabaseHelper.instance.updateUserStats(updated);
     notifyListeners();
+    // Cập nhật widget ngoài màn hình chính (không chờ kết quả)
+    WidgetService.update();
   }
 
   // ---------------- HOÀN THÀNH NHẮC NHỞ ----------------
@@ -103,6 +107,8 @@ class GamificationViewModel extends ChangeNotifier {
       } else {
         await NotificationService().cancelTaskReminder(task.id!);
       }
+      // Đã xong -> không nhắc theo vị trí nữa
+      if (task.hasLocation) LocationService().refresh();
     }
 
     await _saveUser(

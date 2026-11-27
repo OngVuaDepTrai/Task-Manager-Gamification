@@ -1,7 +1,4 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
-import 'package:geolocator/geolocator.dart';
 
 import '../../core/app_colors.dart';
 import '../../core/app_session.dart';
@@ -10,6 +7,7 @@ import '../../models/group_model.dart';
 import '../../models/task_model.dart';
 import '../../models/user_model.dart';
 import '../../services/notification_service.dart';
+import 'location_picker_view.dart';
 
 // Form dùng chung cho:
 // - Tạo / sửa việc cá nhân
@@ -39,8 +37,10 @@ class _TaskFormViewState extends State<TaskFormView> {
   String _selectedCategory = DatabaseHelper.dailyCategoryName;
   String _selectedGPS = "Chưa thiết lập";
 
-  StreamSubscription<Position>? _positionStream;
-  bool _isTracking = false;
+  // Nhắc nhở theo vị trí (chọn trên Google Maps)
+  double? _locLat;
+  double? _locLng;
+  int _locRadius = 300;
   List<Map<String, dynamic>> _dbCategories = [];
 
   // ---- Chế độ việc nhóm ----
@@ -83,6 +83,11 @@ class _TaskFormViewState extends State<TaskFormView> {
           widget.task?.category ?? DatabaseHelper.dailyCategoryName;
       _selectedTime = widget.task?.time ?? "18:00";
       _selectedGPS = widget.task?.locationName ?? "Chưa thiết lập";
+      _locLat = widget.task?.locationLat;
+      _locLng = widget.task?.locationLng;
+      _locRadius = widget.task?.locationRadius ?? 300;
+      // Task cũ chỉ có tên mà không có tọa độ -> coi như chưa thiết lập
+      if (_locLat == null || _locLng == null) _selectedGPS = "Chưa thiết lập";
       _selectedDate = "$_day/$_month/$_year";
     }
     if (_isGroupMode) {
@@ -196,236 +201,42 @@ class _TaskFormViewState extends State<TaskFormView> {
   void dispose() {
     _titleController.dispose();
     _descController.dispose();
-    _positionStream?.cancel();
     super.dispose();
   }
 
-  Future<void> _startLocationTracking(
-    double targetLat,
-    double targetLng,
-    String locationName,
-  ) async {
-    bool serviceEnabled;
-    LocationPermission permission;
-
-    serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Vui lòng bật GPS trên điện thoại.')),
-      );
-      return;
-    }
-
-    permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Bị từ chối quyền vị trí.')),
-        );
-        return;
-      }
-    }
-
-    if (permission == LocationPermission.deniedForever) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Quyền vị trí bị từ chối vĩnh viễn.')),
-      );
-      return;
-    }
-
+  // Mở màn Google Maps để chọn vị trí nhắc nhở
+  Future<void> _openLocationPicker() async {
+    final picked = await Navigator.push<PickedLocation>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => LocationPickerView(
+          initialLat: _locLat,
+          initialLng: _locLng,
+          initialName: _locLat != null ? _selectedGPS : null,
+          initialRadius: _locRadius,
+        ),
+      ),
+    );
+    if (picked == null || !mounted) return;
     setState(() {
-      _isTracking = true;
-      _selectedGPS = locationName;
+      _locLat = picked.lat;
+      _locLng = picked.lng;
+      _locRadius = picked.radius;
+      _selectedGPS = picked.name;
     });
-
-    final Position currentPos = await Geolocator.getCurrentPosition(
-      locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
-    );
-    final double initialDistance = Geolocator.distanceBetween(
-      currentPos.latitude,
-      currentPos.longitude,
-      targetLat,
-      targetLng,
-    );
-
-    if (initialDistance <= 500) {
-      if (!mounted) return;
-      setState(() => _isTracking = false);
-      _showReminderDialog(locationName);
-      return;
-    }
-
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Đang theo dõi vị trí: $locationName')),
-    );
-
-    _positionStream =
-        Geolocator.getPositionStream(
-          locationSettings: const LocationSettings(
-            accuracy: LocationAccuracy.high,
-            distanceFilter: 10,
-          ),
-        ).listen((Position position) {
-          final double distanceInMeters = Geolocator.distanceBetween(
-            position.latitude,
-            position.longitude,
-            targetLat,
-            targetLng,
-          );
-          if (distanceInMeters <= 500) {
-            _positionStream?.cancel();
-            if (!mounted) return;
-            setState(() => _isTracking = false);
-            _showReminderDialog(locationName);
-          }
-        });
   }
 
-  void _showReminderDialog(String locationName) {
-    // Bắn thông báo thật (rung/chuông) ngoài hộp thoại trong app
-    final title = _titleController.text.trim();
-    NotificationService().showNotification(
-      "📍 Đã đến gần $locationName",
-      title.isEmpty ? "Hãy thực hiện công việc ngay nhé!" : "Đến lúc làm: $title",
-    );
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        backgroundColor: AppColors.card,
-        title: const Row(
-          children: [
-            Icon(Icons.location_on, color: AppColors.hpRed, size: 28),
-            SizedBox(width: 10),
-            Text("Đã đến nơi!", style: TextStyle(color: AppColors.textMain)),
-          ],
-        ),
-        content: Text(
-          "Bạn đang ở gần $locationName (Dưới 500m).\nHãy thực hiện task ngay nhé!",
-          style: const TextStyle(color: AppColors.textSub, fontSize: 16),
-        ),
-        actions: [
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary),
-            onPressed: () => Navigator.pop(context),
-            child: const Text(
-              "Đã hiểu",
-              style: TextStyle(
-                color: Colors.black,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
+  void _clearLocation() {
+    setState(() {
+      _locLat = null;
+      _locLng = null;
+      _locRadius = 300;
+      _selectedGPS = "Chưa thiết lập";
+    });
   }
 
-  void _showGPSPicker() {
-    final List<Map<String, dynamic>> savedLocations = [
-      {
-        "name": "Trường ĐH Công Thương",
-        "icon": Icons.school,
-        "lat": 10.8064,
-        "lng": 106.6264,
-      },
-      {
-        "name": "Sân Cầu Lông (Sóc Trăng)",
-        "icon": Icons.sports_tennis,
-        "lat": 9.6000,
-        "lng": 105.9700,
-      },
-      {
-        "name": "Vị trí hiện tại của tôi",
-        "icon": Icons.my_location,
-        "lat": 0.0,
-        "lng": 0.0,
-      },
-    ];
-
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: AppColors.background,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (context) {
-        return Container(
-          padding: const EdgeInsets.all(16),
-          height: MediaQuery.of(context).size.height * 0.6,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                "Thiết lập nhắc nhở GPS",
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: AppColors.textMain,
-                ),
-              ),
-              const SizedBox(height: 10),
-              const Text(
-                "App sẽ gửi thông báo khi bạn di chuyển đến gần các khu vực này.",
-                style: TextStyle(color: AppColors.textSub, fontSize: 13),
-              ),
-              const SizedBox(height: 20),
-              Expanded(
-                child: ListView.builder(
-                  itemCount: savedLocations.length,
-                  itemBuilder: (context, index) {
-                    final loc = savedLocations[index];
-                    return ListTile(
-                      leading: Icon(
-                        loc["icon"] as IconData,
-                        color: AppColors.textSub,
-                      ),
-                      title: Text(
-                        loc["name"] as String,
-                        style: const TextStyle(color: AppColors.textMain),
-                      ),
-                      trailing: const Icon(
-                        Icons.gps_fixed,
-                        color: AppColors.primary,
-                      ),
-                      onTap: () async {
-                        Navigator.pop(context);
-                        if ((loc["lat"] as double) == 0.0) {
-                          final Position pos =
-                              await Geolocator.getCurrentPosition(
-                                locationSettings: const LocationSettings(
-                                  accuracy: LocationAccuracy.high,
-                                ),
-                              );
-                          _startLocationTracking(
-                            pos.latitude,
-                            pos.longitude,
-                            loc["name"] as String,
-                          );
-                        } else {
-                          _startLocationTracking(
-                            loc["lat"] as double,
-                            loc["lng"] as double,
-                            loc["name"] as String,
-                          );
-                        }
-                      },
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
+  String get _radiusText =>
+      _locRadius >= 1000 ? "${_locRadius ~/ 1000} km" : "$_locRadius m";
 
   DateTime _firstSelectableDate() {
     final now = DateTime.now();
@@ -820,7 +631,10 @@ class _TaskFormViewState extends State<TaskFormView> {
       exp: widget.task?.exp ?? 20,
       gold: widget.task?.gold ?? 10,
       isDone: widget.task?.isDone ?? false,
-      locationName: _selectedGPS != "Chưa thiết lập" ? _selectedGPS : null,
+      locationName: _locLat != null ? _selectedGPS : null,
+      locationLat: _locLat,
+      locationLng: _locLng,
+      locationRadius: _locRadius,
       reminderEnabled: _reminderEnabled,
       // Giữ nguyên thông tin nhóm nếu đây là việc nhóm được giao
       groupId: widget.task?.groupId,
@@ -1082,14 +896,15 @@ class _TaskFormViewState extends State<TaskFormView> {
             ),
             const SizedBox(height: 12),
 
+            // Nhắc nhở theo vị trí: chọn trên bản đồ
             GestureDetector(
-              onTap: _showGPSPicker,
+              onTap: _openLocationPicker,
               child: Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
                   color: AppColors.card,
                   borderRadius: BorderRadius.circular(12),
-                  border: _isTracking
+                  border: _locLat != null
                       ? Border.all(color: AppColors.primary)
                       : null,
                 ),
@@ -1097,47 +912,48 @@ class _TaskFormViewState extends State<TaskFormView> {
                   children: [
                     Icon(
                       Icons.location_on,
-                      color: _isTracking
+                      color: _locLat != null
                           ? AppColors.primary
                           : AppColors.textSub,
                     ),
                     const SizedBox(width: 16),
-                    Text(
-                      "Nhắc nhở GPS",
-                      style: TextStyle(
-                        color: _isTracking
-                            ? AppColors.primary
-                            : AppColors.textSub,
-                        fontSize: 16,
-                      ),
-                    ),
-                    const Spacer(),
-                    Flexible(
-                      child: Text(
-                        _selectedGPS,
-                        style: const TextStyle(
-                          color: AppColors.textMain,
-                          fontSize: 15,
-                          fontWeight: FontWeight.bold,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                        textAlign: TextAlign.right,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    _isTracking
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: AppColors.primary,
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            "Nhắc nhở GPS",
+                            style: TextStyle(
+                              color: _locLat != null
+                                  ? AppColors.primary
+                                  : AppColors.textSub,
+                              fontSize: 16,
                             ),
-                          )
-                        : const Icon(
-                            Icons.chevron_right,
-                            color: AppColors.textSub,
                           ),
+                          const SizedBox(height: 2),
+                          Text(
+                            _locLat != null
+                                ? "$_selectedGPS · trong $_radiusText"
+                                : "Chưa thiết lập",
+                            style: const TextStyle(
+                              color: AppColors.textMain,
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                            ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (_locLat != null)
+                      IconButton(
+                        tooltip: "Bỏ vị trí",
+                        icon: const Icon(Icons.close, color: AppColors.textSub),
+                        onPressed: _clearLocation,
+                      )
+                    else
+                      const Icon(Icons.chevron_right, color: AppColors.textSub),
                   ],
                 ),
               ),

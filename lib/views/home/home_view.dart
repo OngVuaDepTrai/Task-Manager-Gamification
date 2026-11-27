@@ -9,6 +9,8 @@ import '../../core/app_session.dart';
 import '../../core/database_helper.dart';
 import '../../core/game_rules.dart';
 import '../../models/task_model.dart';
+import '../../services/location_service.dart';
+import '../../services/widget_service.dart';
 import '../../view_models/gamification_view_model.dart';
 import '../../widgets/task_card_widget.dart';
 import '../task/task_form_view.dart';
@@ -97,6 +99,10 @@ class _HomeViewState extends State<HomeView> {
         }
         isLoading = false;
       });
+      // Làm mới widget ngoài màn hình chính theo danh sách việc hôm nay
+      WidgetService.update();
+      // Cập nhật danh sách địa điểm cần theo dõi cho nhắc nhở GPS
+      LocationService().refresh();
     } else {
       if (!mounted) return;
       setState(() => isLoading = false);
@@ -109,47 +115,47 @@ class _HomeViewState extends State<HomeView> {
 
     return Stack(
       children: [
-    Scaffold(
-      body: SafeArea(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildGamificationTopBar(),
-            const SizedBox(height: 16),
-            _buildHeader(pendingCount, todayTasks.length),
-            const SizedBox(height: 12),
-            _buildSearchBar(),
-            const SizedBox(height: 12),
-            _buildReminderStatusFilters(),
-            const SizedBox(height: 10),
-            _buildDynamicFilters(),
-            const SizedBox(height: 12),
-            Expanded(
-              child: isLoading
-                  ? const Center(
-                      child: CircularProgressIndicator(
-                        color: AppColors.primary,
-                      ),
-                    )
-                  : _buildTaskList(todayTasks),
+        Scaffold(
+          body: SafeArea(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildGamificationTopBar(),
+                const SizedBox(height: 16),
+                _buildHeader(pendingCount, todayTasks.length),
+                const SizedBox(height: 12),
+                _buildSearchBar(),
+                const SizedBox(height: 12),
+                _buildReminderStatusFilters(),
+                const SizedBox(height: 10),
+                _buildDynamicFilters(),
+                const SizedBox(height: 12),
+                Expanded(
+                  child: isLoading
+                      ? const Center(
+                          child: CircularProgressIndicator(
+                            color: AppColors.primary,
+                          ),
+                        )
+                      : _buildTaskList(todayTasks),
+                ),
+              ],
             ),
-          ],
+          ),
+          floatingActionButton: FloatingActionButton(
+            backgroundColor: AppColors.primary,
+            onPressed: () async {
+              final result = await Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const TaskFormView()),
+              );
+              if (result == true) {
+                _loadTasksAndCategories();
+              }
+            },
+            child: const Icon(Icons.add, color: Colors.white, size: 30),
+          ),
         ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        backgroundColor: AppColors.primary,
-        onPressed: () async {
-          final result = await Navigator.push(
-            context,
-            MaterialPageRoute(builder: (context) => const TaskFormView()),
-          );
-          if (result == true) {
-            _loadTasksAndCategories();
-          }
-        },
-        child: const Icon(Icons.add, color: Colors.white, size: 30),
-      ),
-    ),
         // Tung hoa khi hoàn thành nhắc nhở đúng hạn
         Align(
           alignment: Alignment.topCenter,
@@ -274,42 +280,42 @@ class _HomeViewState extends State<HomeView> {
             child: Stack(
               clipBehavior: Clip.none,
               children: [
-            Builder(
-              builder: (context) {
-                String? path = user?.avatarPath;
-                if (path == null || path.isEmpty) {
-                  return CircleAvatar(
-                    radius: 24,
-                    backgroundColor: AppColors.primary,
-                    child: Text(
-                      user?.name.substring(0, 1).toUpperCase() ?? "U",
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 18,
-                      ),
-                    ),
-                  );
-                }
-                if (path.startsWith('icon:')) {
-                  int codePoint = int.parse(path.split(':')[1]);
-                  return CircleAvatar(
-                    radius: 24,
-                    backgroundColor: AppColors.primary,
-                    child: Icon(
-                      IconData(codePoint, fontFamily: 'MaterialIcons'),
-                      size: 24,
-                      color: Colors.white,
-                    ),
-                  );
-                }
-                return CircleAvatar(
-                  radius: 24,
-                  backgroundColor: AppColors.primary,
-                  backgroundImage: FileImage(File(path)),
-                );
-              },
-            ),
+                Builder(
+                  builder: (context) {
+                    String? path = user?.avatarPath;
+                    if (path == null || path.isEmpty) {
+                      return CircleAvatar(
+                        radius: 24,
+                        backgroundColor: AppColors.primary,
+                        child: Text(
+                          user?.name.substring(0, 1).toUpperCase() ?? "U",
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 18,
+                          ),
+                        ),
+                      );
+                    }
+                    if (path.startsWith('icon:')) {
+                      int codePoint = int.parse(path.split(':')[1]);
+                      return CircleAvatar(
+                        radius: 24,
+                        backgroundColor: AppColors.primary,
+                        child: Icon(
+                          IconData(codePoint, fontFamily: 'MaterialIcons'),
+                          size: 24,
+                          color: Colors.white,
+                        ),
+                      );
+                    }
+                    return CircleAvatar(
+                      radius: 24,
+                      backgroundColor: AppColors.primary,
+                      backgroundImage: FileImage(File(path)),
+                    );
+                  },
+                ),
                 // Chấm đỏ báo có lời mời kết bạn / việc được giao chưa xem
                 if (unseenCount > 0)
                   Positioned(
@@ -590,7 +596,8 @@ class _HomeViewState extends State<HomeView> {
   Widget _buildTaskList(List<TaskModel> tasksList) {
     final now = DateTime.now();
     final filteredTasks = tasksList.where((t) {
-      final matchCategory = selectedCategory == 'Tất cả' ||
+      final matchCategory =
+          selectedCategory == 'Tất cả' ||
           (selectedCategory == DatabaseHelper.groupCategoryName
               ? t.isGroupTask
               : t.category == selectedCategory);

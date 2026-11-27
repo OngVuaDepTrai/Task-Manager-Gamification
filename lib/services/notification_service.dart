@@ -7,9 +7,9 @@ import '../core/database_helper.dart';
 
 // Service thông báo nhắc nhở công việc (dùng flutter_local_notifications).
 //
-// Thông báo được hệ điều hành lên lịch (AlarmManager trên Android), nên
-// vẫn hiện đúng giờ kể cả khi người dùng đã tắt ứng dụng.
-// ID thông báo = ID của task, để có thể hủy / đặt lại theo từng task.
+// Mỗi task có 2 thông báo do hệ điều hành lên lịch (vẫn hiện khi đã tắt app):
+//  - Nhắc trước [leadMinutes] phút: "Sắp đến giờ"
+//  - Nhắc đúng giờ
 class NotificationService {
   static final NotificationService _instance = NotificationService._internal();
   factory NotificationService() => _instance;
@@ -25,8 +25,15 @@ class NotificationService {
   static const String _channelName = 'Nhắc nhở công việc';
   static const String _channelDesc = 'Thông báo nhắc việc theo giờ và vị trí';
 
-  // ID dành riêng cho thông báo tức thời (GPS), tránh trùng ID task
-  static const int _instantIdBase = 900000;
+  // Nhắc trước bao nhiêu phút
+  static const int leadMinutes = 5;
+
+  // ID thông báo tức thời (GPS), đặt rất lớn để không trùng ID của task
+  static const int _instantIdBase = 1000000000;
+
+  // Mỗi task dùng 2 ID: chẵn = đúng giờ, lẻ = nhắc trước
+  int _dueId(int taskId) => taskId * 2;
+  int _preId(int taskId) => taskId * 2 + 1;
 
   bool get _isSupported =>
       !kIsWeb &&
@@ -75,8 +82,21 @@ class NotificationService {
     }
   }
 
-  // Xin quyền thông báo (Android 13+ / iOS). Gọi sau khi đăng nhập.
-  Future<void> requestPermissions() async {
+  // Cập nhật quyền "báo thức chính xác" (người dùng có thể vừa bật trong Cài đặt)
+  Future<void> _refreshExactPermission() async {
+    final android = _plugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
+    if (android != null) {
+      _canScheduleExact =
+          await android.canScheduleExactNotifications() ?? false;
+    }
+  }
+
+  // Xin quyền thông báo (Android 13+ / iOS) và quyền báo thức chính xác.
+  // askExactAlarm = false: chỉ kiểm tra, không mở trang Cài đặt (dùng khi tự đăng nhập)
+  Future<void> requestPermissions({bool askExactAlarm = true}) async {
     if (!_initialized) return;
     final android = _plugin
         .resolvePlatformSpecificImplementation<
@@ -84,8 +104,13 @@ class NotificationService {
         >();
     if (android != null) {
       await android.requestNotificationsPermission();
-      _canScheduleExact =
-          await android.canScheduleExactNotifications() ?? false;
+      var canExact = await android.canScheduleExactNotifications() ?? false;
+      if (!canExact && askExactAlarm) {
+        // Mở trang "Báo thức & lời nhắc" để người dùng cho phép
+        await android.requestExactAlarmsPermission();
+        canExact = await android.canScheduleExactNotifications() ?? false;
+      }
+      _canScheduleExact = canExact;
     }
     await _plugin
         .resolvePlatformSpecificImplementation<
@@ -94,9 +119,9 @@ class NotificationService {
         ?.requestPermissions(alert: true, badge: true, sound: true);
   }
 
-  // Đặt lịch nhắc cho 1 task.
-  // - Task thường: nhắc 1 lần đúng ngày giờ đến hạn (bỏ qua nếu đã qua).
-  // - Task hàng ngày: lặp lại mỗi ngày vào giờ đã chọn.
+  // Đặt lịch nhắc cho 1 task (2 thông báo: trước 5 phút + đúng giờ).
+  // - Task thường: nhắc 1 lần (bỏ qua phần đã qua giờ).
+  // - Task hàng ngày: lặp lại mỗi ngày.
   //   skipToday = true khi hôm nay đã làm xong -> bắt đầu nhắc từ ngày mai.
   Future<void> scheduleTaskReminder({
     required int taskId,
@@ -111,44 +136,83 @@ class NotificationService {
     bool skipToday = false,
   }) async {
     if (!_initialized) return;
+    await _refreshExactPermission();
 
     final parts = timeHHmm.split(':');
     final hour = parts.isNotEmpty ? (int.tryParse(parts[0]) ?? 8) : 8;
     final minute = parts.length > 1 ? (int.tryParse(parts[1]) ?? 0) : 0;
 
     final now = DateTime.now();
-    DateTime target;
+
+    // Thời điểm đúng giờ
+    DateTime due;
     if (isDaily) {
-      target = DateTime(now.year, now.month, now.day, hour, minute);
-      if (skipToday || !target.isAfter(now)) {
-        target = DateTime(now.year, now.month, now.day + 1, hour, minute);
+      due = DateTime(now.year, now.month, now.day, hour, minute);
+      if (skipToday || !due.isAfter(now)) {
+        due = DateTime(now.year, now.month, now.day + 1, hour, minute);
       }
     } else {
-      target = DateTime(year, month, day, hour, minute);
-      if (!target.isAfter(now)) {
+      due = DateTime(year, month, day, hour, minute);
+      if (!due.isAfter(now)) {
         await cancelTaskReminder(taskId); // Đã qua giờ -> không nhắc nữa
         return;
       }
     }
 
-    final body = (description != null && description.trim().isNotEmpty)
+    // Thời điểm nhắc trước
+    DateTime pre = due.subtract(const Duration(minutes: leadMinutes));
+    bool schedulePre = true;
+    if (!pre.isAfter(now)) {
+      if (isDaily) {
+        // Hôm nay đã lỡ mốc nhắc trước -> mốc kế tiếp là ngày mai
+        pre = pre.add(const Duration(days: 1));
+      } else {
+        schedulePre = false; // Task thường: chỉ còn nhắc đúng giờ
+      }
+    }
+
+    final dueBody = (description != null && description.trim().isNotEmpty)
         ? description.trim()
         : "[$category] Đến giờ thực hiện lúc $timeHHmm. Hoàn thành đúng hạn để nhận vàng & hồi máu!";
+    final preBody =
+        "[$category] Còn $leadMinutes phút nữa đến giờ thực hiện (lúc $timeHHmm). Chuẩn bị nhé!";
+
+    final mode = _canScheduleExact
+        ? AndroidScheduleMode.exactAllowWhileIdle
+        : AndroidScheduleMode.inexactAllowWhileIdle;
+    final match = isDaily ? DateTimeComponents.time : null;
 
     try {
+      // Thông báo đúng giờ
       await _plugin.zonedSchedule(
-        taskId,
+        _dueId(taskId),
         "⏰ $title",
-        body,
-        // Thời điểm tuyệt đối (UTC) tương ứng với giờ địa phương đã chọn
-        tz.TZDateTime.from(target, tz.UTC),
+        dueBody,
+        tz.TZDateTime.from(due, tz.UTC),
         _details,
-        androidScheduleMode: _canScheduleExact
-            ? AndroidScheduleMode.exactAllowWhileIdle
-            : AndroidScheduleMode.inexactAllowWhileIdle,
-        matchDateTimeComponents: isDaily ? DateTimeComponents.time : null,
+        androidScheduleMode: mode,
+        matchDateTimeComponents: match,
       );
-      debugPrint("Đã đặt nhắc nhở [$title] lúc $target (hàng ngày: $isDaily)");
+
+      // Thông báo nhắc trước
+      if (schedulePre) {
+        await _plugin.zonedSchedule(
+          _preId(taskId),
+          "⏳ Sắp đến giờ: $title",
+          preBody,
+          tz.TZDateTime.from(pre, tz.UTC),
+          _details,
+          androidScheduleMode: mode,
+          matchDateTimeComponents: match,
+        );
+      } else {
+        await _plugin.cancel(_preId(taskId));
+      }
+
+      debugPrint(
+        "Đã đặt nhắc nhở [$title]: trước=${schedulePre ? pre : 'không'}, "
+        "đúng giờ=$due (hàng ngày: $isDaily, chính xác: $_canScheduleExact)",
+      );
     } catch (e) {
       debugPrint("Lỗi đặt nhắc nhở [$title]: $e");
     }
@@ -156,7 +220,8 @@ class NotificationService {
 
   Future<void> cancelTaskReminder(int taskId) async {
     if (!_initialized) return;
-    await _plugin.cancel(taskId);
+    await _plugin.cancel(_dueId(taskId));
+    await _plugin.cancel(_preId(taskId));
   }
 
   Future<void> cancelAll() async {
@@ -171,7 +236,7 @@ class NotificationService {
     await _plugin.show(id, title, body, _details);
   }
 
-  // Đặt lại toàn bộ nhắc nhở của 1 tài khoản (gọi khi đăng nhập).
+  // Đặt lại toàn bộ nhắc nhở của 1 tài khoản (gọi khi đăng nhập / mở app).
   // Vì nhiều tài khoản có thể dùng chung 1 máy, xóa hết lịch cũ trước.
   Future<void> rescheduleAllForUser(int userId) async {
     if (!_initialized) return;

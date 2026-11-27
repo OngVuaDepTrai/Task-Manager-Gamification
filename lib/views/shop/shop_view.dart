@@ -13,6 +13,7 @@ import '../../widgets/reward_card_widget.dart';
 // Cửa hàng chỉ gồm 2 loại:
 // 1. Khiên bảo vệ chuỗi (giá cao, giữ tối đa 2 cái) -> chống lười biếng
 // 2. Phần thưởng tự đặt (giá cố định 20 vàng ~ 2 nhắc nhở) -> tự thưởng nghỉ ngơi
+//    Số phần thưởng được tạo phụ thuộc cấp độ: cứ mỗi 5 cấp mở thêm 1 ô.
 class ShopView extends StatefulWidget {
   const ShopView({super.key});
 
@@ -60,9 +61,34 @@ class _ShopViewState extends State<ShopView> {
     setState(() => _customRewards = list);
   }
 
+  // ---------------- Ô PHẦN THƯỞNG THEO CẤP ----------------
+  int get _level => GameRules.levelFromExp(AppSession.currentUser?.exp ?? 0);
+  int get _slots => GameRules.rewardSlotsForLevel(_level);
+  bool get _canAddReward => _customRewards.length < _slots;
+
+  String _lockedMessage() {
+    final nextLevel = GameRules.nextRewardSlotLevel(_level);
+    final expNeeded =
+        GameRules.expForLevel(nextLevel) - (AppSession.currentUser?.exp ?? 0);
+    if (_slots == 0) {
+      return "Đạt Lv. $nextLevel để mở ô phần thưởng đầu tiên (còn $expNeeded EXP).";
+    }
+    return "Đã dùng hết $_slots ô. Đạt Lv. $nextLevel để mở thêm 1 ô "
+        "(còn $expNeeded EXP), hoặc xóa bớt phần thưởng cũ.";
+  }
+
+  void _onAddRewardPressed() {
+    if (!_canAddReward) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(_lockedMessage())));
+      return;
+    }
+    _openAddRewardDialog();
+  }
+
   @override
   Widget build(BuildContext context) {
-    // Rebuild khi vàng / khiên thay đổi
+    // Rebuild khi vàng / khiên / EXP thay đổi
     context.watch<GamificationViewModel>();
     final user = AppSession.currentUser;
     final int gold = user?.gold ?? 0;
@@ -95,16 +121,22 @@ class _ShopViewState extends State<ShopView> {
                 Expanded(
                   child: selectedCategory == "Vật phẩm"
                       ? _buildItemList(gold, shields)
-                      : _buildCustomRewardList(gold),
+                      : _buildCustomRewardTab(gold),
                 ),
               ],
             ),
           ),
           floatingActionButton: selectedCategory == "Tự thưởng"
               ? FloatingActionButton(
-                  backgroundColor: AppColors.primary,
-                  onPressed: _openAddRewardDialog,
-                  child: const Icon(Icons.add, color: Colors.black, size: 28),
+                  backgroundColor: _canAddReward
+                      ? AppColors.primary
+                      : Colors.grey.shade800,
+                  onPressed: _onAddRewardPressed,
+                  child: Icon(
+                    _canAddReward ? Icons.add : Icons.lock_outline,
+                    color: _canAddReward ? Colors.black : AppColors.textSub,
+                    size: 28,
+                  ),
                 )
               : null,
         ),
@@ -159,17 +191,103 @@ class _ShopViewState extends State<ShopView> {
   }
 
   // ---------------- PHẦN THƯỞNG TỰ ĐẶT ----------------
+  Widget _buildCustomRewardTab(int gold) {
+    return Column(
+      children: [
+        _buildSlotInfoCard(),
+        const SizedBox(height: 12),
+        Expanded(child: _buildCustomRewardList(gold)),
+      ],
+    );
+  }
+
+  // Thẻ hiển thị số ô đã dùng / đã mở và tiến độ tới ô tiếp theo
+  Widget _buildSlotInfoCard() {
+    final int exp = AppSession.currentUser?.exp ?? 0;
+    final int level = _level;
+    final int slots = _slots;
+    final int used = _customRewards.length;
+    final int nextLevel = GameRules.nextRewardSlotLevel(level);
+    final int prevLevel = nextLevel - GameRules.levelsPerRewardSlot;
+    final int fromExp = GameRules.expForLevel(prevLevel < 1 ? 1 : prevLevel);
+    final int toExp = GameRules.expForLevel(nextLevel);
+    final double progress = toExp == fromExp
+        ? 1
+        : ((exp - fromExp) / (toExp - fromExp)).clamp(0.0, 1.0);
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.primary.withAlpha(70)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons.inventory_2_outlined,
+                color: AppColors.primary,
+                size: 20,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  "Ô phần thưởng: $used/$slots",
+                  style: const TextStyle(
+                    color: AppColors.textMain,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 15,
+                  ),
+                ),
+              ),
+              Text(
+                "Lv. $level",
+                style: const TextStyle(
+                  color: AppColors.primary,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: LinearProgressIndicator(
+              value: progress,
+              minHeight: 8,
+              backgroundColor: Colors.grey.shade800,
+              color: AppColors.primary,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            "Ô tiếp theo mở ở Lv. $nextLevel "
+            "(còn ${toExp - exp} EXP) · Mỗi ${GameRules.levelsPerRewardSlot} cấp +1 ô",
+            style: const TextStyle(color: AppColors.textSub, fontSize: 12),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildCustomRewardList(int gold) {
     if (_customRewards.isEmpty) {
-      return const Center(
+      return Center(
         child: Padding(
-          padding: EdgeInsets.symmetric(horizontal: 32),
+          padding: const EdgeInsets.symmetric(horizontal: 32),
           child: Text(
-            "Chưa có phần thưởng nào.\nBấm + để thêm hoạt động giải trí bạn muốn tự thưởng "
-            "(VD: uống trà sữa, xem 1 tập phim...).\n\n"
-            "Mỗi phần thưởng giá ${GameRules.customRewardPrice} Vàng ~ hoàn thành 2 nhắc nhở.",
+            _canAddReward
+                ? "Chưa có phần thưởng nào.\nBấm + để thêm hoạt động giải trí bạn muốn tự thưởng "
+                      "(VD: uống trà sữa, xem 1 tập phim...).\n\n"
+                      "Mỗi phần thưởng giá ${GameRules.customRewardPrice} Vàng ~ hoàn thành 2 nhắc nhở."
+                : "🔒 ${_lockedMessage()}\n\n"
+                      "Hoàn thành nhắc nhở để nhận EXP và lên cấp nhé!",
             textAlign: TextAlign.center,
-            style: TextStyle(color: AppColors.textSub, height: 1.5),
+            style: const TextStyle(color: AppColors.textSub, height: 1.5),
           ),
         ),
       );
@@ -237,9 +355,10 @@ class _ShopViewState extends State<ShopView> {
               ),
             ),
             const SizedBox(height: 12),
-            const Text(
-              "Giá cố định: ${GameRules.customRewardPrice} Vàng",
-              style: TextStyle(color: AppColors.gold),
+            Text(
+              "Giá cố định: ${GameRules.customRewardPrice} Vàng · "
+              "Ô còn trống: ${_slots - _customRewards.length}",
+              style: const TextStyle(color: AppColors.gold),
             ),
           ],
         ),
@@ -257,6 +376,20 @@ class _ShopViewState extends State<ShopView> {
               final name = nameController.text.trim();
               final user = AppSession.currentUser;
               if (name.isEmpty || user == null || user.id == null) return;
+
+              // Kiểm tra lại số ô ngay trước khi lưu (tránh bấm 2 lần)
+              final current = await DatabaseHelper.instance.getCustomRewards(
+                user.id!,
+              );
+              if (current.length >= _slots) {
+                if (dialogContext.mounted) Navigator.pop(dialogContext);
+                if (!mounted) return;
+                ScaffoldMessenger.of(context)
+                    .showSnackBar(SnackBar(content: Text(_lockedMessage())));
+                _loadCustomRewards();
+                return;
+              }
+
               await DatabaseHelper.instance.insertCustomReward(
                 user.id!,
                 name,
@@ -282,7 +415,7 @@ class _ShopViewState extends State<ShopView> {
           style: TextStyle(color: AppColors.textMain),
         ),
         content: Text(
-          "Xóa '$name' khỏi danh sách tự thưởng?",
+          "Xóa '$name' khỏi danh sách tự thưởng? Ô này sẽ trống để thêm phần thưởng khác.",
           style: const TextStyle(color: AppColors.textSub),
         ),
         actions: [
@@ -346,9 +479,9 @@ class _ShopViewState extends State<ShopView> {
               final error = await action();
               if (!mounted) return;
               if (error == null) _confettiController.play();
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text(error ?? successMessage)),
-              );
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(SnackBar(content: Text(error ?? successMessage)));
             },
             child: const Text(
               "Xác nhận",
