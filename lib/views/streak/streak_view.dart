@@ -1,13 +1,85 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../../core/app_colors.dart';
 import '../../core/app_session.dart';
+import '../../core/database_helper.dart';
+import '../../core/game_rules.dart';
+import '../../view_models/gamification_view_model.dart';
 
-class StreakView extends StatelessWidget {
+// Trạng thái 1 ngày trong tuần
+enum _DayStatus { done, missed, empty, pending, future }
+
+class StreakView extends StatefulWidget {
   const StreakView({super.key});
 
   @override
+  State<StreakView> createState() => _StreakViewState();
+}
+
+class _StreakViewState extends State<StreakView> {
+  bool _isLoading = true;
+  int _completedCount = 0;
+  int _overdueCount = 0;
+  List<_DayStatus> _weekStatus = List.filled(7, _DayStatus.future);
+  List<DateTime> _weekDays = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadStats();
+  }
+
+  Future<void> _loadStats() async {
+    final user = AppSession.currentUser;
+    if (user == null || user.id == null) {
+      setState(() => _isLoading = false);
+      return;
+    }
+    final db = DatabaseHelper.instance;
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final monday = DateTime(today.year, today.month, today.day - (today.weekday - 1));
+
+    final days = List.generate(
+      7,
+      (i) => DateTime(monday.year, monday.month, monday.day + i),
+    );
+    final statuses = <_DayStatus>[];
+    for (final d in days) {
+      if (d.isAfter(today)) {
+        statuses.add(_DayStatus.future);
+        continue;
+      }
+      final tasks = await db.getTasksForDate(user.id!, d.day, d.month, d.year);
+      if (tasks.isEmpty) {
+        statuses.add(_DayStatus.empty);
+      } else if (tasks.any((t) => t.isDone)) {
+        statuses.add(_DayStatus.done);
+      } else if (d == today) {
+        statuses.add(_DayStatus.pending);
+      } else {
+        statuses.add(_DayStatus.missed);
+      }
+    }
+
+    final completed = await db.countCompletedTasks(user.id!);
+    final allTasks = await db.getTasks(user.id!);
+    final overdue = allTasks.where((t) => t.isOverdue(now)).length;
+
+    if (!mounted) return;
+    setState(() {
+      _weekDays = days;
+      _weekStatus = statuses;
+      _completedCount = completed;
+      _overdueCount = overdue;
+      _isLoading = false;
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
+    context.watch<GamificationViewModel>();
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
@@ -23,67 +95,55 @@ class StreakView extends StatelessWidget {
         ),
       ),
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildCurrentStreakCard(),
-              const SizedBox(height: 20),
-
-              const Text(
-                "Hoạt động tuần này",
-                style: TextStyle(
-                  color: AppColors.textMain,
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
+        child: _isLoading
+            ? const Center(
+                child: CircularProgressIndicator(color: AppColors.primary),
+              )
+            : RefreshIndicator(
+                onRefresh: _loadStats,
+                child: SingleChildScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildCurrentStreakCard(),
+                      const SizedBox(height: 16),
+                      _buildHpShieldCard(),
+                      const SizedBox(height: 20),
+                      _sectionTitle("Hoạt động tuần này"),
+                      _buildWeekActivity(),
+                      const SizedBox(height: 24),
+                      _sectionTitle("Thống kê"),
+                      _buildStatistics(),
+                      const SizedBox(height: 24),
+                      _sectionTitle("Luật chơi"),
+                      _buildRulesCard(),
+                    ],
+                  ),
                 ),
               ),
-              const SizedBox(height: 12),
-
-              _buildWeekActivity(),
-
-              const SizedBox(height: 24),
-
-              const Text(
-                "Thống kê",
-                style: TextStyle(
-                  color: AppColors.textMain,
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 12),
-
-              _buildStatistics(),
-
-              const SizedBox(height: 24),
-
-              const Text(
-                "Bảo vệ chuỗi",
-                style: TextStyle(
-                  color: AppColors.textMain,
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 12),
-
-              _buildStreakProtectionCard(),
-            ],
-          ),
-        ),
       ),
     );
   }
+
+  Widget _sectionTitle(String text) => Padding(
+    padding: const EdgeInsets.only(bottom: 12),
+    child: Text(
+      text,
+      style: const TextStyle(
+        color: AppColors.textMain,
+        fontSize: 20,
+        fontWeight: FontWeight.bold,
+      ),
+    ),
+  );
 
   Widget _buildCurrentStreakCard() {
     final user = AppSession.currentUser;
     final int currentStreak = user?.currentStreak ?? 0;
     final int longestStreak = user?.longestStreak ?? 0;
-    final int exp = user?.exp ?? 0;
-    final int completedTasks =
-        exp ~/ 20; // Mô phỏng số task đã làm dựa trên EXP (20 điểm/task)
+    final bool todayDone = _statusOfToday() == _DayStatus.done;
 
     return Container(
       width: double.infinity,
@@ -102,15 +162,13 @@ class StreakView extends StatelessWidget {
               shape: BoxShape.circle,
               color: Colors.orange.withAlpha(35),
             ),
-            child: const Icon(
+            child: Icon(
               Icons.local_fire_department,
-              color: Colors.orange,
+              color: currentStreak > 0 ? Colors.orange : Colors.grey,
               size: 58,
             ),
           ),
-
           const SizedBox(height: 12),
-
           Text(
             "$currentStreak ngày",
             style: const TextStyle(
@@ -119,16 +177,15 @@ class StreakView extends StatelessWidget {
               fontWeight: FontWeight.bold,
             ),
           ),
-
           const SizedBox(height: 4),
-
-          const Text(
-            "Chuỗi hiện tại",
-            style: TextStyle(color: AppColors.textSub, fontSize: 15),
+          Text(
+            todayDone
+                ? "Hôm nay đã giữ chuỗi ✅ (+1 khi qua ngày mới)"
+                : "Hoàn thành 1 nhắc nhở hôm nay để giữ chuỗi",
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: AppColors.textSub, fontSize: 14),
           ),
-
           const SizedBox(height: 20),
-
           Row(
             children: [
               Expanded(
@@ -139,27 +196,94 @@ class StreakView extends StatelessWidget {
                   subtitle: "Kỷ lục",
                 ),
               ),
-
               Container(width: 1, height: 48, color: Colors.white12),
-
               Expanded(
                 child: _buildSmallInfo(
                   icon: Icons.check_circle_outline,
                   iconColor: AppColors.primary,
-                  title: "$completedTasks",
-                  subtitle: "Task hoàn thành",
+                  title: "$_completedCount",
+                  subtitle: "Lần hoàn thành",
                 ),
               ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
 
-              Container(width: 1, height: 48, color: Colors.white12),
+  _DayStatus? _statusOfToday() {
+    final now = DateTime.now();
+    for (int i = 0; i < _weekDays.length; i++) {
+      final d = _weekDays[i];
+      if (d.year == now.year && d.month == now.month && d.day == now.day) {
+        return _weekStatus[i];
+      }
+    }
+    return null;
+  }
 
-              Expanded(
-                child: _buildSmallInfo(
-                  icon: Icons.bolt,
-                  iconColor: Colors.orange,
-                  title: "+$exp",
-                  subtitle: "Tổng EXP",
+  Widget _buildHpShieldCard() {
+    final user = AppSession.currentUser;
+    final int hp = user?.hp ?? GameRules.maxHp;
+    final int shields = user?.shields ?? 0;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  "Máu",
+                  style: TextStyle(color: AppColors.textSub, fontSize: 13),
                 ),
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    for (int i = 0; i < GameRules.maxHp; i++)
+                      Icon(
+                        i < hp ? Icons.favorite : Icons.favorite_border,
+                        color: i < hp ? AppColors.hpRed : Colors.grey,
+                        size: 26,
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  "Còn được bỏ lỡ $hp ngày trước khi mất chuỗi",
+                  style: const TextStyle(color: AppColors.textSub, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+          Container(width: 1, height: 70, color: Colors.white12),
+          const SizedBox(width: 16),
+          Column(
+            children: [
+              Icon(
+                Icons.shield,
+                color: shields > 0 ? AppColors.primary : Colors.grey,
+                size: 34,
+              ),
+              const SizedBox(height: 4),
+              Text(
+                "$shields/${GameRules.maxShields}",
+                style: const TextStyle(
+                  color: AppColors.textMain,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
+              ),
+              const Text(
+                "Khiên",
+                style: TextStyle(color: AppColors.textSub, fontSize: 12),
               ),
             ],
           ),
@@ -197,19 +321,7 @@ class StreakView extends StatelessWidget {
   }
 
   Widget _buildWeekActivity() {
-    final user = AppSession.currentUser;
-    final int streak = user?.currentStreak ?? 0;
-
-    // Dựa vào chuỗi hiện tại để "thắp sáng" ngọn lửa tuần lùi lại. Account trắng (streak = 0) sẽ không có lửa.
-    final List<Map<String, dynamic>> days = [
-      {"day": "T2", "date": "21", "done": streak >= 5},
-      {"day": "T3", "date": "22", "done": streak >= 4},
-      {"day": "T4", "date": "23", "done": streak >= 3},
-      {"day": "T5", "date": "24", "done": streak >= 2},
-      {"day": "T6", "date": "25", "done": streak >= 1},
-      {"day": "T7", "date": "26", "done": false},
-      {"day": "CN", "date": "27", "done": false},
-    ];
+    const labels = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"];
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 18),
@@ -217,55 +329,82 @@ class StreakView extends StatelessWidget {
         color: AppColors.card,
         borderRadius: BorderRadius.circular(16),
       ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: days.map((item) {
-          bool isDone = item["done"];
+      child: Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: List.generate(7, (i) {
+              final status = _weekStatus[i];
+              final date = _weekDays.isNotEmpty ? _weekDays[i].day : 0;
 
-          return Column(
-            children: [
-              Text(
-                item["day"],
-                style: const TextStyle(
-                  color: AppColors.textSub,
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
+              Color color;
+              Widget inner;
+              switch (status) {
+                case _DayStatus.done:
+                  color = Colors.orange;
+                  inner = const Icon(
+                    Icons.local_fire_department,
+                    color: Colors.orange,
+                    size: 22,
+                  );
+                  break;
+                case _DayStatus.missed:
+                  color = AppColors.hpRed;
+                  inner = const Icon(
+                    Icons.close,
+                    color: AppColors.hpRed,
+                    size: 20,
+                  );
+                  break;
+                default:
+                  color = status == _DayStatus.pending
+                      ? AppColors.primary
+                      : Colors.grey.shade800;
+                  inner = Text(
+                    "$date",
+                    style: const TextStyle(
+                      color: AppColors.textSub,
+                      fontSize: 13,
+                    ),
+                  );
+              }
 
-              const SizedBox(height: 8),
-
-              Container(
-                width: 38,
-                height: 38,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: isDone
-                      ? Colors.orange.withAlpha(45)
-                      : AppColors.background,
-                  border: Border.all(
-                    color: isDone ? Colors.orange : Colors.grey.shade800,
+              return Column(
+                children: [
+                  Text(
+                    labels[i],
+                    style: const TextStyle(
+                      color: AppColors.textSub,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
-                ),
-                child: Center(
-                  child: isDone
-                      ? const Icon(
-                          Icons.local_fire_department,
-                          color: Colors.orange,
-                          size: 22,
-                        )
-                      : Text(
-                          item["date"],
-                          style: const TextStyle(
-                            color: AppColors.textSub,
-                            fontSize: 13,
-                          ),
-                        ),
-                ),
-              ),
-            ],
-          );
-        }).toList(),
+                  const SizedBox(height: 8),
+                  Container(
+                    width: 38,
+                    height: 38,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: color.withAlpha(
+                        status == _DayStatus.done ||
+                                status == _DayStatus.missed
+                            ? 45
+                            : 0,
+                      ),
+                      border: Border.all(color: color),
+                    ),
+                    child: Center(child: inner),
+                  ),
+                ],
+              );
+            }),
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            "🔥 hoàn thành · ✖ bỏ lỡ · ô trống: không có nhắc nhở",
+            style: TextStyle(color: AppColors.textSub, fontSize: 11),
+          ),
+        ],
       ),
     );
   }
@@ -275,12 +414,6 @@ class StreakView extends StatelessWidget {
     final int exp = user?.exp ?? 0;
     final int gold = user?.gold ?? 0;
 
-    // Logic tính toán: Trung bình 1 Task 20 EXP
-    final int completedTasks = exp ~/ 20;
-    final int missedTasks = (user?.currentStreak == 0 && exp > 0)
-        ? 2
-        : 0; // Tài khoản mới mặc định 0 bỏ lỡ
-
     return Column(
       children: [
         Row(
@@ -289,7 +422,7 @@ class StreakView extends StatelessWidget {
               child: _buildStatisticCard(
                 icon: Icons.task_alt,
                 iconColor: AppColors.primary,
-                value: "$completedTasks",
+                value: "$_completedCount",
                 title: "Đã hoàn thành",
               ),
             ),
@@ -298,15 +431,13 @@ class StreakView extends StatelessWidget {
               child: _buildStatisticCard(
                 icon: Icons.cancel_outlined,
                 iconColor: AppColors.hpRed,
-                value: "$missedTasks",
-                title: "Bỏ lỡ",
+                value: "$_overdueCount",
+                title: "Đang quá hạn",
               ),
             ),
           ],
         ),
-
         const SizedBox(height: 12),
-
         Row(
           children: [
             Expanded(
@@ -323,7 +454,7 @@ class StreakView extends StatelessWidget {
                 icon: Icons.monetization_on,
                 iconColor: AppColors.gold,
                 value: "$gold",
-                title: "Vàng kiếm được",
+                title: "Vàng hiện có",
               ),
             ),
           ],
@@ -367,73 +498,38 @@ class StreakView extends StatelessWidget {
     );
   }
 
-  Widget _buildStreakProtectionCard() {
+  Widget _buildRulesCard() {
+    const rules = [
+      "✅ Hoàn thành đúng hạn: +${GameRules.goldOnTime} vàng, +1 ❤️",
+      "⏰ Hoàn thành trễ: +${GameRules.goldLate} vàng, không hồi máu",
+      "🔥 Ngày có nhắc nhở và làm xong ≥ 1 việc: chuỗi +1",
+      "😴 Ngày không có nhắc nhở: không thay đổi gì",
+      "🛡️ Ngày bỏ lỡ hết: tự dùng 1 khiên nếu có, nếu không thì -1 ❤️",
+      "💔 Hết máu: chuỗi về 0, máu hồi đầy",
+    ];
     return Container(
+      width: double.infinity,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: AppColors.card,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: AppColors.primary.withAlpha(70)),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 52,
-            height: 52,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: AppColors.primary.withAlpha(35),
-            ),
-            child: const Icon(
-              Icons.shield_outlined,
-              color: AppColors.primary,
-              size: 30,
-            ),
-          ),
-
-          const SizedBox(width: 14),
-
-          const Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  "Khiên bảo vệ chuỗi",
-                  style: TextStyle(
-                    color: AppColors.textMain,
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                  ),
+          for (final r in rules)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Text(
+                r,
+                style: const TextStyle(
+                  color: AppColors.textSub,
+                  fontSize: 13,
+                  height: 1.4,
                 ),
-                SizedBox(height: 4),
-                Text(
-                  "Bạn đang có 1 khiên. Khiên giúp giữ chuỗi khi bỏ lỡ một ngày.",
-                  style: TextStyle(
-                    color: AppColors.textSub,
-                    fontSize: 13,
-                    height: 1.4,
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          const SizedBox(width: 8),
-
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            decoration: BoxDecoration(
-              color: AppColors.primary.withAlpha(30),
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: const Text(
-              "x1",
-              style: TextStyle(
-                color: AppColors.primary,
-                fontWeight: FontWeight.bold,
               ),
             ),
-          ),
         ],
       ),
     );

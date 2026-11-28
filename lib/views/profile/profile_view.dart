@@ -7,6 +7,9 @@ import '../../core/app_colors.dart';
 import '../../core/app_session.dart';
 import '../../core/database_helper.dart';
 import '../../models/user_model.dart';
+import '../../services/location_service.dart';
+import '../../services/notification_service.dart';
+import '../../services/widget_service.dart';
 import '../auth/auth_view.dart';
 
 class ProfileView extends StatefulWidget {
@@ -35,17 +38,7 @@ class _ProfileViewState extends State<ProfileView> {
   Future<void> _updateAvatarPath(String newPath) async {
     final user = AppSession.currentUser;
     if (user != null) {
-      final updatedUser = UserModel(
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        password: user.password,
-        exp: user.exp,
-        gold: user.gold,
-        currentStreak: user.currentStreak,
-        longestStreak: user.longestStreak,
-        avatarPath: newPath,
-      );
+      final UserModel updatedUser = user.copyWith(avatarPath: newPath);
 
       await DatabaseHelper.instance.updateUserStats(updatedUser);
       setState(() {
@@ -443,8 +436,15 @@ class _ProfileViewState extends State<ProfileView> {
                   "ĐĂNG XUẤT",
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                 ),
-                onPressed: () {
+                onPressed: () async {
+                  // Hủy nhắc nhở của tài khoản đang đăng xuất
+                  NotificationService().cancelAll();
+                  NotificationService().stopGroupTaskListener();
+                  await LocationService().stop();
+                  await DatabaseHelper.instance.signOut();
                   AppSession.currentUser = null;
+                  await WidgetService.clear();
+                  if (!context.mounted) return;
                   Navigator.pushAndRemoveUntil(
                     context,
                     MaterialPageRoute(builder: (context) => const AuthView()),
