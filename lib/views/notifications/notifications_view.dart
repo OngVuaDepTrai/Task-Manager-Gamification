@@ -6,7 +6,7 @@ import '../../core/database_helper.dart';
 import '../../models/friend_model.dart';
 import '../../models/notification_model.dart';
 
-// Thông báo: (1) Lời mời kết bạn  (2) Công việc được nhóm trưởng giao
+// Thông báo: (1) Lời mời kết bạn  (2) Thông báo nhóm: được giao việc, được thêm vào nhóm
 class NotificationsView extends StatefulWidget {
   const NotificationsView({super.key});
 
@@ -98,9 +98,9 @@ class _NotificationsViewState extends State<NotificationsView> {
                   else
                     ..._requests.map(_buildRequestTile),
                   const SizedBox(height: 20),
-                  _sectionTitle("Công việc được giao", _notifications.length),
+                  _sectionTitle("Thông báo nhóm", _notifications.length),
                   if (_notifications.isEmpty)
-                    _emptyText("Chưa có công việc nào được giao.")
+                    _emptyText("Chưa có thông báo nhóm nào.")
                   else
                     ..._notifications.map(_buildNotificationTile),
                 ],
@@ -199,7 +199,10 @@ class _NotificationsViewState extends State<NotificationsView> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.assignment_ind, color: Colors.greenAccent),
+          Icon(
+            n.type == 'group_added' ? Icons.group_add : Icons.assignment_ind,
+            color: Colors.greenAccent,
+          ),
           const SizedBox(width: 12),
           Expanded(
             child: Column(

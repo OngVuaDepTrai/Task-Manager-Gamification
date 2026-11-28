@@ -273,4 +273,43 @@ class NotificationService {
       );
     }
   }
+
+  // ====================== VIỆC NHÓM MỚI (REALTIME) ======================
+  // Tăng lên mỗi khi có việc nhóm mới -> Trang chủ lắng nghe để tải lại danh sách
+  static final ValueNotifier<int> groupTaskArrived = ValueNotifier<int>(0);
+
+  // Bắt đầu nghe việc nhóm mới được giao: báo ngay + đặt lịch nhắc.
+  // Gọi sau khi đăng nhập / khôi phục phiên.
+  void startGroupTaskListener(int userId) {
+    DatabaseHelper.instance.listenAssignedTasks(userId, (task) async {
+      try {
+        await showNotification(
+          '📋 Việc nhóm mới: ${task.title}',
+          'Nhóm "${task.groupName ?? ''}" vừa giao cho bạn, hạn ${task.time} '
+              '${task.day}/${task.month}/${task.year}',
+        );
+        if (task.id != null && task.reminderEnabled) {
+          await scheduleTaskReminder(
+            taskId: task.id!,
+            title: task.title,
+            category: task.category,
+            timeHHmm: task.time,
+            day: task.day,
+            month: task.month,
+            year: task.year,
+            isDaily: false,
+            description: task.description,
+          );
+        }
+      } catch (e) {
+        debugPrint('Xử lý việc nhóm mới lỗi: $e');
+      }
+      groupTaskArrived.value++;
+    });
+  }
+
+  // Gọi khi đăng xuất
+  void stopGroupTaskListener() {
+    DatabaseHelper.instance.stopListeningTasks();
+  }
 }

@@ -3,13 +3,15 @@ import 'package:flutter/material.dart';
 import '../../core/app_colors.dart';
 import '../../core/app_session.dart';
 import '../../core/database_helper.dart';
+import '../../models/friend_model.dart';
 import '../../models/group_model.dart';
 import '../../models/task_model.dart';
 import '../../models/user_model.dart';
 import '../task/task_form_view.dart';
 
-// Chi tiết 1 việc nhóm: danh sách thành viên (nút xóa khỏi nhóm)
-// + nút Giao công việc nếu bạn là nhóm trưởng
+// Chi tiết 1 việc nhóm:
+// - Nhóm trưởng: thêm / xóa thành viên, giao công việc, xóa nhóm
+// - Thành viên: xem thành viên và việc đã giao, rời nhóm
 class GroupDetailView extends StatefulWidget {
   final GroupModel group;
   const GroupDetailView({super.key, required this.group});
@@ -107,6 +109,213 @@ class _GroupDetailViewState extends State<GroupDetailView> {
     if (result == true) _loadMembers();
   }
 
+  void _showMsg(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  // Hộp thoại xác nhận dùng chung (xóa nhóm, rời nhóm)
+  Future<bool> _confirm(String title, String message, String okLabel) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: AppColors.card,
+        title: Text(title, style: const TextStyle(color: AppColors.textMain)),
+        content: Text(
+          message,
+          style: const TextStyle(color: AppColors.textSub),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text(
+              "Hủy",
+              style: TextStyle(color: AppColors.textSub),
+            ),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.hpRed),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: Text(okLabel, style: const TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    return ok == true;
+  }
+
+  // Nhóm trưởng: thêm thành viên từ danh sách bạn bè chưa có trong nhóm
+  Future<void> _openAddMembersDialog() async {
+    final me = AppSession.currentUser;
+    if (me == null || me.id == null) return;
+
+    final List<FriendModel> friends = await DatabaseHelper.instance.getFriends(
+      me.id!,
+    );
+    if (!mounted) return;
+    final memberIds = _members.map((m) => m.id).toSet();
+    final candidates = friends
+        .where((f) => !memberIds.contains(f.friendUserId))
+        .toList();
+
+    if (candidates.isEmpty) {
+      _showMsg(
+        friends.isEmpty
+            ? "Bạn chưa có bạn bè nào để thêm vào nhóm."
+            : "Tất cả bạn bè của bạn đã ở trong nhóm.",
+      );
+      return;
+    }
+
+    final Set<int> selected = {};
+    final added = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          backgroundColor: AppColors.card,
+          title: const Text(
+            "Thêm thành viên",
+            style: TextStyle(color: AppColors.textMain),
+          ),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  "Chọn bạn bè (${selected.length} đã chọn)",
+                  style: const TextStyle(color: AppColors.textSub),
+                ),
+                const SizedBox(height: 6),
+                Flexible(
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: candidates
+                        .map(
+                          (f) => CheckboxListTile(
+                            contentPadding: EdgeInsets.zero,
+                            activeColor: AppColors.primary,
+                            checkColor: Colors.black,
+                            value: selected.contains(f.friendUserId),
+                            onChanged: (val) => setDialogState(() {
+                              if (val == true) {
+                                selected.add(f.friendUserId);
+                              } else {
+                                selected.remove(f.friendUserId);
+                              }
+                            }),
+                            title: Text(
+                              f.name,
+                              style: const TextStyle(
+                                color: AppColors.textMain,
+                              ),
+                            ),
+                            subtitle: Text(
+                              f.email,
+                              style: const TextStyle(
+                                color: AppColors.textSub,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ),
+                        )
+                        .toList(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text(
+                "Hủy",
+                style: TextStyle(color: AppColors.textSub),
+              ),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+              ),
+              onPressed: selected.isEmpty
+                  ? null
+                  : () => Navigator.pop(dialogContext, true),
+              child: const Text(
+                "Thêm",
+                style: TextStyle(
+                  color: Colors.black,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (added != true || selected.isEmpty) return;
+    try {
+      final count = await DatabaseHelper.instance.addGroupMembers(
+        group: widget.group,
+        leaderName: me.name,
+        userIds: selected.toList(),
+      );
+      if (!mounted) return;
+      _showMsg(
+        count > 0
+            ? "Đã thêm $count thành viên vào nhóm"
+            : "Những người này đã ở trong nhóm",
+      );
+      _loadMembers();
+    } catch (e) {
+      if (!mounted) return;
+      _showMsg("Không thêm được thành viên: $e");
+    }
+  }
+
+  // Nhóm trưởng: xóa nhóm (xóa luôn các việc đã giao trong nhóm)
+  Future<void> _deleteGroup() async {
+    if (!_isLeader) return;
+    final ok = await _confirm(
+      "Xóa nhóm",
+      "Xóa nhóm \"${widget.group.name}\"? Tất cả việc đã giao trong nhóm "
+          "cũng bị xóa. Không thể hoàn tác.",
+      "Xóa nhóm",
+    );
+    if (!ok) return;
+    try {
+      await DatabaseHelper.instance.deleteGroup(widget.group.id);
+      if (!mounted) return;
+      _showMsg('Đã xóa nhóm "${widget.group.name}"');
+      Navigator.pop(context, true);
+    } catch (e) {
+      if (!mounted) return;
+      _showMsg("Không xóa được nhóm: $e");
+    }
+  }
+
+  // Thành viên (không phải nhóm trưởng): rời nhóm
+  Future<void> _leaveGroup() async {
+    final myId = AppSession.currentUser?.id;
+    if (myId == null || _isLeader) return;
+    final ok = await _confirm(
+      "Rời nhóm",
+      "Rời khỏi nhóm \"${widget.group.name}\"? Bạn sẽ không còn thấy thành viên "
+          "và việc của nhóm này.",
+      "Rời nhóm",
+    );
+    if (!ok) return;
+    try {
+      await DatabaseHelper.instance.leaveGroup(widget.group.id, myId);
+      if (!mounted) return;
+      _showMsg('Đã rời nhóm "${widget.group.name}"');
+      Navigator.pop(context, true);
+    } catch (e) {
+      if (!mounted) return;
+      _showMsg("Không rời được nhóm: $e");
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final myId = AppSession.currentUser?.id;
@@ -120,6 +329,21 @@ class _GroupDetailViewState extends State<GroupDetailView> {
           widget.group.name,
           style: const TextStyle(fontWeight: FontWeight.bold),
         ),
+        actions: [
+          // Chỉ nhóm trưởng mới xóa được nhóm; thành viên thì có nút rời nhóm
+          if (_isLeader)
+            IconButton(
+              tooltip: "Xóa nhóm",
+              icon: const Icon(Icons.delete_outline, color: AppColors.hpRed),
+              onPressed: _deleteGroup,
+            )
+          else
+            IconButton(
+              tooltip: "Rời nhóm",
+              icon: const Icon(Icons.logout, color: AppColors.hpRed),
+              onPressed: _leaveGroup,
+            ),
+        ],
       ),
       body: _isLoading
           ? const Center(
@@ -128,13 +352,36 @@ class _GroupDetailViewState extends State<GroupDetailView> {
           : ListView(
               padding: const EdgeInsets.fromLTRB(16, 4, 16, 90),
               children: [
-                Text(
-                  "Thành viên (${_members.length})",
-                  style: const TextStyle(
-                    color: AppColors.textMain,
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                  ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        "Thành viên (${_members.length})",
+                        style: const TextStyle(
+                          color: AppColors.textMain,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    // Chỉ nhóm trưởng mới thêm được thành viên
+                    if (_isLeader)
+                      TextButton.icon(
+                        onPressed: _openAddMembersDialog,
+                        icon: const Icon(
+                          Icons.person_add_alt_1,
+                          color: AppColors.primary,
+                          size: 20,
+                        ),
+                        label: const Text(
+                          "Thêm thành viên",
+                          style: TextStyle(
+                            color: AppColors.primary,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
                 const SizedBox(height: 10),
                 ..._members.map((m) {

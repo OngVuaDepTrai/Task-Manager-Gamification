@@ -40,6 +40,8 @@ class _AuthGateState extends State<AuthGate> {
             .evaluatePastDays();
         await NotificationService().requestPermissions(askExactAlarm: false);
         await NotificationService().rescheduleAllForUser(user.id!);
+        // Nghe việc nhóm mới được giao (Realtime)
+        NotificationService().startGroupTaskListener(user.id!);
         ok = true;
         if (summary.hasChanges) {
           message = "Chào ${user.name}! ${summary.toMessage()}";

@@ -439,6 +439,7 @@ class _ProfileViewState extends State<ProfileView> {
                 onPressed: () async {
                   // Hủy nhắc nhở của tài khoản đang đăng xuất
                   NotificationService().cancelAll();
+                  NotificationService().stopGroupTaskListener();
                   await LocationService().stop();
                   await DatabaseHelper.instance.signOut();
                   AppSession.currentUser = null;

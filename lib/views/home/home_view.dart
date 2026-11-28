@@ -10,6 +10,7 @@ import '../../core/database_helper.dart';
 import '../../core/game_rules.dart';
 import '../../models/task_model.dart';
 import '../../services/location_service.dart';
+import '../../services/notification_service.dart';
 import '../../services/widget_service.dart';
 import '../../view_models/gamification_view_model.dart';
 import '../../widgets/task_card_widget.dart';
@@ -53,8 +54,14 @@ class _HomeViewState extends State<HomeView> {
     duration: const Duration(seconds: 2),
   );
 
+  // Có việc nhóm mới qua Realtime -> tải lại danh sách và chấm đỏ thông báo
+  void _onGroupTaskArrived() {
+    if (mounted) _loadTasksAndCategories();
+  }
+
   @override
   void dispose() {
+    NotificationService.groupTaskArrived.removeListener(_onGroupTaskArrived);
     _searchController.dispose();
     _confettiController.dispose();
     super.dispose();
@@ -64,6 +71,7 @@ class _HomeViewState extends State<HomeView> {
   void initState() {
     super.initState();
     _loadTasksAndCategories();
+    NotificationService.groupTaskArrived.addListener(_onGroupTaskArrived);
   }
 
   Future<void> _loadTasksAndCategories() async {

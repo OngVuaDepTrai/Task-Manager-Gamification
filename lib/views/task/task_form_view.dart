@@ -34,7 +34,8 @@ class _TaskFormViewState extends State<TaskFormView> {
   late int _year;
   String _selectedDate = "Hôm nay";
   String _selectedTime = "18:00";
-  String _selectedCategory = DatabaseHelper.dailyCategoryName;
+  // Việc mới mặc định là việc 1 lần ("Cá nhân"), không phải "Hàng ngày"
+  String _selectedCategory = "Cá nhân";
   String _selectedGPS = "Chưa thiết lập";
 
   // Nhắc nhở theo vị trí (chọn trên Google Maps)
@@ -190,7 +191,12 @@ class _TaskFormViewState extends State<TaskFormView> {
             !_isGroupMode &&
             cats.isNotEmpty &&
             !_dbCategories.any((c) => c['name'] == _selectedCategory)) {
-          _selectedCategory = cats.first['name'] as String;
+          // Ưu tiên danh mục thường đầu tiên, tránh rơi vào "Hàng ngày"
+          final normal = cats.where(
+            (c) => c['name'] != DatabaseHelper.dailyCategoryName,
+          );
+          _selectedCategory =
+              (normal.isNotEmpty ? normal.first : cats.first)['name'] as String;
           _isDaily = _selectedCategory == DatabaseHelper.dailyCategoryName;
         }
       });
@@ -271,10 +277,19 @@ class _TaskFormViewState extends State<TaskFormView> {
     }
   }
 
+  TimeOfDay _currentTimeOfDay() {
+    final parts = _selectedTime.split(':');
+    final h = parts.isNotEmpty ? (int.tryParse(parts[0]) ?? 18) : 18;
+    final m = parts.length > 1 ? (int.tryParse(parts[1]) ?? 0) : 0;
+    return TimeOfDay(hour: h, minute: m);
+  }
+
   Future<void> _pickTime() async {
     final TimeOfDay? picked = await showTimePicker(
       context: context,
-      initialTime: TimeOfDay.now(),
+      // Mở bằng giờ đang chọn (bản cũ mở bằng giờ hiện tại, bấm OK luôn
+      // sẽ thành "giờ đã qua" và không lưu được)
+      initialTime: _currentTimeOfDay(),
     );
     if (picked != null) {
       setState(
@@ -575,6 +590,29 @@ class _TaskFormViewState extends State<TaskFormView> {
     }
   }
 
+  // Lưu thất bại (mất mạng, Supabase từ chối...) -> báo rõ lý do thay vì đứng im
+  void _showSaveError(Object e) {
+    debugPrint('Lưu công việc lỗi: $e');
+    if (!mounted) return;
+    final msg = e.toString();
+    final missingColumn =
+        msg.contains('locationLat') ||
+        msg.contains('locationLng') ||
+        msg.contains('locationRadius');
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        backgroundColor: AppColors.hpRed,
+        duration: const Duration(seconds: 6),
+        content: Text(
+          missingColumn
+              ? 'Không lưu được: bảng tasks trên Supabase chưa có cột vị trí. '
+                    'Hãy chạy file supabase_location_columns.sql trong SQL Editor.'
+              : 'Không lưu được công việc: $msg',
+        ),
+      ),
+    );
+  }
+
   Future<void> _saveTask() async {
     if (_titleController.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -584,7 +622,14 @@ class _TaskFormViewState extends State<TaskFormView> {
     }
 
     final user = AppSession.currentUser;
-    if (user == null || user.id == null) return;
+    if (user == null || user.id == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("Phiên đăng nhập đã hết, vui lòng đăng nhập lại."),
+        ),
+      );
+      return;
+    }
 
     final bool effectiveDaily =
         !_isGroupMode &&
@@ -647,28 +692,38 @@ class _TaskFormViewState extends State<TaskFormView> {
     }
 
     int taskId;
-    if (widget.task == null) {
-      taskId = await DatabaseHelper.instance.insertTask(taskObj, user.id!);
-    } else {
-      await DatabaseHelper.instance.updateTask(taskObj, user.id!);
-      taskId = widget.task!.id ?? 0;
+    try {
+      if (widget.task == null) {
+        taskId = await DatabaseHelper.instance.insertTask(taskObj, user.id!);
+      } else {
+        await DatabaseHelper.instance.updateTask(taskObj, user.id!);
+        taskId = widget.task!.id ?? 0;
+      }
+    } catch (e) {
+      _showSaveError(e);
+      return;
     }
 
+    // Task đã lưu xong; lỗi đặt nhắc nhở (nếu có) không được chặn việc đóng form
     if (taskId > 0) {
-      if (_reminderEnabled) {
-        await NotificationService().scheduleTaskReminder(
-          taskId: taskId,
-          title: taskObj.title,
-          category: taskObj.category,
-          timeHHmm: taskObj.time,
-          day: taskObj.day,
-          month: taskObj.month,
-          year: taskObj.year,
-          isDaily: taskObj.isDaily,
-          description: taskObj.description,
-        );
-      } else {
-        await NotificationService().cancelTaskReminder(taskId);
+      try {
+        if (_reminderEnabled) {
+          await NotificationService().scheduleTaskReminder(
+            taskId: taskId,
+            title: taskObj.title,
+            category: taskObj.category,
+            timeHHmm: taskObj.time,
+            day: taskObj.day,
+            month: taskObj.month,
+            year: taskObj.year,
+            isDaily: taskObj.isDaily,
+            description: taskObj.description,
+          );
+        } else {
+          await NotificationService().cancelTaskReminder(taskId);
+        }
+      } catch (e) {
+        debugPrint('Đặt nhắc nhở lỗi: $e');
       }
     }
 
@@ -689,42 +744,51 @@ class _TaskFormViewState extends State<TaskFormView> {
     );
 
     int taskId;
-    if (widget.task == null) {
-      taskId = await db.assignGroupTask(
-        group: group,
-        leaderId: leader.id!,
-        leaderName: leader.name,
-        assigneeId: assigneeId,
-        task: taskObj,
-      );
-    } else {
-      await db.updateGroupTask(
-        group: group,
-        leaderId: leader.id!,
-        leaderName: leader.name,
-        oldAssigneeId: widget.task!.ownerId ?? assigneeId,
-        newAssigneeId: assigneeId,
-        task: taskObj,
-      );
-      taskId = widget.task!.id ?? 0;
+    try {
+      if (widget.task == null) {
+        taskId = await db.assignGroupTask(
+          group: group,
+          leaderId: leader.id!,
+          leaderName: leader.name,
+          assigneeId: assigneeId,
+          task: taskObj,
+        );
+      } else {
+        await db.updateGroupTask(
+          group: group,
+          leaderId: leader.id!,
+          leaderName: leader.name,
+          oldAssigneeId: widget.task!.ownerId ?? assigneeId,
+          newAssigneeId: assigneeId,
+          task: taskObj,
+        );
+        taskId = widget.task!.id ?? 0;
+      }
+    } catch (e) {
+      _showSaveError(e);
+      return;
     }
 
     // Nhắc nhở chỉ đặt trên máy của người đảm nhận (ở đây: khi giao cho chính mình)
     if (taskId > 0) {
-      if (_reminderEnabled && assigneeId == leader.id) {
-        await NotificationService().scheduleTaskReminder(
-          taskId: taskId,
-          title: taskObj.title,
-          category: taskObj.category,
-          timeHHmm: taskObj.time,
-          day: taskObj.day,
-          month: taskObj.month,
-          year: taskObj.year,
-          isDaily: false,
-          description: taskObj.description,
-        );
-      } else {
-        await NotificationService().cancelTaskReminder(taskId);
+      try {
+        if (_reminderEnabled && assigneeId == leader.id) {
+          await NotificationService().scheduleTaskReminder(
+            taskId: taskId,
+            title: taskObj.title,
+            category: taskObj.category,
+            timeHHmm: taskObj.time,
+            day: taskObj.day,
+            month: taskObj.month,
+            year: taskObj.year,
+            isDaily: false,
+            description: taskObj.description,
+          );
+        } else {
+          await NotificationService().cancelTaskReminder(taskId);
+        }
+      } catch (e) {
+        debugPrint('Đặt nhắc nhở lỗi: $e');
       }
     }
 

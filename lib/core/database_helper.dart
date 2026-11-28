@@ -659,6 +659,59 @@ class DatabaseHelper {
         .eq('user_id', userId);
   }
 
+  // Nhóm trưởng thêm thành viên vào nhóm đã có (bỏ qua người đã ở trong nhóm)
+  // và gửi thông báo cho từng người được thêm. Trả về số người thêm mới.
+  Future<int> addGroupMembers({
+    required GroupModel group,
+    required String leaderName,
+    required List<int> userIds,
+  }) async {
+    if (userIds.isEmpty) return 0;
+    final existing = await _c
+        .from('group_members')
+        .select('user_id')
+        .eq('group_id', group.id);
+    final already = {for (final r in existing) r['user_id'] as int};
+    final newIds = userIds.where((id) => !already.contains(id)).toSet().toList();
+    if (newIds.isEmpty) return 0;
+
+    await _c
+        .from('group_members')
+        .upsert(
+          newIds.map((uid) => {'group_id': group.id, 'user_id': uid}).toList(),
+          onConflict: 'group_id,user_id',
+          ignoreDuplicates: true,
+        );
+    await _c
+        .from('notifications')
+        .insert(
+          newIds
+              .map(
+                (uid) => {
+                  'user_id': uid,
+                  'type': 'group_added',
+                  'message':
+                      '$leaderName đã thêm bạn vào nhóm "${group.name}"',
+                  'is_read': 0,
+                },
+              )
+              .toList(),
+        );
+    return newIds.length;
+  }
+
+  // Thành viên tự rời nhóm (nhóm trưởng không rời được, chỉ xóa nhóm)
+  Future<void> leaveGroup(int groupId, int userId) async {
+    await removeGroupMember(groupId, userId);
+  }
+
+  // Nhóm trưởng xóa nhóm: xóa các việc đã giao trong nhóm, thành viên, rồi nhóm
+  Future<void> deleteGroup(int groupId) async {
+    await _c.from('tasks').delete().eq('group_id', groupId);
+    await _c.from('group_members').delete().eq('group_id', groupId);
+    await _c.from('groups').delete().eq('id', groupId);
+  }
+
   Future<GroupModel?> getGroupById(int groupId) async {
     final g = await _c.from('groups').select().eq('id', groupId).maybeSingle();
     if (g == null) return null;
@@ -812,5 +865,46 @@ class DatabaseHelper {
           .eq('status', 'pending'),
     ]);
     return results[0].length + results[1].length;
+  }
+
+  // ====================== REALTIME ======================
+  RealtimeChannel? _taskChannel;
+
+  // Lắng nghe việc nhóm MỚI được giao cho userId (Supabase Realtime).
+  // Chỉ hoạt động khi app đang mở hoặc đang chạy nền.
+  // Yêu cầu: bảng tasks đã được thêm vào publication supabase_realtime.
+  void listenAssignedTasks(int userId, void Function(TaskModel task) onNewTask) {
+    stopListeningTasks();
+    _taskChannel = _c
+        .channel('assigned-tasks-$userId')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.insert,
+          schema: 'public',
+          table: 'tasks',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'user_id',
+            value: '$userId',
+          ),
+          callback: (payload) {
+            try {
+              final task = TaskModel.fromMap(payload.newRecord);
+              if (task.isGroupTask) onNewTask(task);
+            } catch (e) {
+              debugPrint('Realtime: không đọc được task mới: $e');
+            }
+          },
+        )
+        .subscribe((status, error) {
+          debugPrint('Realtime assigned-tasks-$userId: $status ${error ?? ''}');
+        });
+  }
+
+  void stopListeningTasks() {
+    final ch = _taskChannel;
+    if (ch != null) {
+      _c.removeChannel(ch);
+      _taskChannel = null;
+    }
   }
 }

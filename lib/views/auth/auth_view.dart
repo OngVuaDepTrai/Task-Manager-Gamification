@@ -91,6 +91,8 @@ class _AuthViewState extends State<AuthView> {
     // Xin quyền thông báo & đặt lại lịch nhắc nhở của tài khoản này
     await NotificationService().requestPermissions();
     await NotificationService().rescheduleAllForUser(user.id!);
+    // Nghe việc nhóm mới được giao (Realtime)
+    NotificationService().startGroupTaskListener(user.id!);
     if (!mounted) return;
 
     _showMsg(
@@ -140,6 +142,7 @@ class _AuthViewState extends State<AuthView> {
     await NotificationService().requestPermissions();
     await NotificationService()
         .cancelAll(); // Xóa lịch nhắc của tài khoản trước
+    NotificationService().startGroupTaskListener(createdUser.id!);
     if (!mounted) return;
     _showMsg("Đăng ký thành công! Đang tự động đăng nhập...");
     Navigator.pushReplacement(
